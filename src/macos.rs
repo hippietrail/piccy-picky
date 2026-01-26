@@ -31,6 +31,72 @@ pub fn request_folder_access(initial_path: &str) -> Option<PathBuf> {
     None
 }
 
+/// Find images using FileManager.DirectoryEnumerator (handles firmlinks natively)
+pub fn find_images(path: &str, max_depth: usize) -> Vec<PathBuf> {
+    let image_extensions = ["jpg", "jpeg", "png", "gif", "webp", "bmp"];
+    let mut images = Vec::new();
+    
+    unsafe {
+        let fm: *mut Object = msg_send![class!(NSFileManager), defaultManager];
+        
+        // Convert path to NSURL
+        let c_path = CString::new(path).unwrap();
+        let path_obj: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c_path.as_ptr()];
+        let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_obj];
+        
+        // Create enumerator - pass nil for properties and error handler
+        let nil_ptr: *const std::ffi::c_void = std::ptr::null();
+        let enumerator: *mut Object = msg_send![fm, enumeratorAtURL:url includingPropertiesForKeys:nil_ptr options:0 errorHandler:nil_ptr];
+        
+        if enumerator.is_null() {
+            return images;
+        }
+        
+        // Get the base URL's path component count for depth tracking
+        let base_components: *mut Object = msg_send![url, pathComponents];
+        let base_depth: usize = msg_send![base_components, count];
+        
+        // Iterate over directory contents
+        loop {
+            let current_url: *mut Object = msg_send![enumerator, nextObject];
+            if current_url.is_null() {
+                break;
+            }
+            
+            // Get current URL's depth
+            let current_components: *mut Object = msg_send![current_url, pathComponents];
+            let current_depth: usize = msg_send![current_components, count];
+            let relative_depth = if current_depth >= base_depth {
+                current_depth - base_depth
+            } else {
+                0
+            };
+            
+            // Check if we've exceeded max depth
+            if relative_depth > max_depth {
+                let _: () = msg_send![enumerator, skipDescendants];
+                continue;
+            }
+            
+            // Get path string
+            let path_str_obj: *mut Object = msg_send![current_url, path];
+            let c_str: *const i8 = msg_send![path_str_obj, UTF8String];
+            let path_str = std::ffi::CStr::from_ptr(c_str).to_string_lossy();
+            
+            // Check if file has image extension
+            if let Some(ext) = Path::new(path_str.as_ref()).extension() {
+                if let Some(ext_str) = ext.to_str() {
+                    if image_extensions.contains(&ext_str.to_lowercase().as_str()) {
+                        images.push(PathBuf::from(path_str.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    
+    images
+}
+
 pub fn move_to_trash(path: &Path) -> bool {
     unsafe {
         let fm: *mut Object = msg_send![class!(NSFileManager), defaultManager];

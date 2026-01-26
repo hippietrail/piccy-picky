@@ -101,7 +101,7 @@ fn main() {
         let (px_width, px_height) = term::get_terminal_pixel_size();
 
         // Walk path and find images (only if not already chosen)
-        let images = find_images(&target_path, depth);
+        let images = macos::find_images(&target_path, depth);
         if images.is_empty() {
             println!("No images found in {}", target_path);
             break;
@@ -326,45 +326,7 @@ fn main() {
     let _ = term::disable_raw_mode(&original_termios);
 }
 
-fn find_images(path: &str, max_depth: usize) -> Vec<PathBuf> {
-    let mut images = Vec::new();
-    find_images_recursive(path, 0, max_depth, &mut images);
-    images
-}
 
-fn find_images_recursive(path: &str, current_depth: usize, max_depth: usize, images: &mut Vec<PathBuf>) {
-    let image_extensions = ["jpg", "jpeg", "png", "gif", "webp", "bmp"];
-
-    if current_depth > max_depth {
-        return;
-    }
-
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            if let Ok(metadata) = entry.metadata() {
-                let path_buf = entry.path();
-
-                if metadata.is_dir() {
-                    // Recurse into subdirectories if we haven't hit max depth
-                    if current_depth < max_depth {
-                        if let Some(path_str) = path_buf.to_str() {
-                            find_images_recursive(path_str, current_depth + 1, max_depth, images);
-                        }
-                    }
-                } else {
-                    // Check if it's an image file
-                    if let Some(ext) = path_buf.extension() {
-                        if let Some(ext_str) = ext.to_str() {
-                            if image_extensions.contains(&ext_str.to_lowercase().as_str()) {
-                                images.push(path_buf);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// Pre-calculate image display height in character rows
 pub fn calc_image_height_rows(path: &Path, display_width_chars: u32, pixels_per_char: u32) -> Result<u32, String> {

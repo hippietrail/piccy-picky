@@ -1,5 +1,5 @@
 use libc::{ioctl, isatty, STDOUT_FILENO, TIOCGWINSZ, tcgetattr, tcsetattr, STDIN_FILENO, TCSANOW, termios, ECHO, ICANON};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::io::{self, Read};
 
 #[repr(C)]
