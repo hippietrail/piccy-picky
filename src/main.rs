@@ -191,7 +191,8 @@ fn load_and_display_image(path: &Path, max_width: u32, max_height: u32) -> Resul
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&png_data);
     let size = encoded.len();
-    println!("\x1b]1337;File=name=image.png;size={};inline=1;width={}px;height={}px;base64:{}\x07", size, new_w, new_h, encoded);
+    // Let iTerm2 auto-scale; use character-based width to fit terminal
+    println!("\x1b]1337;File=name=image.png;size={};inline=1;width=30c;base64:{}\x07", size, encoded);
 
     Ok(())
 }
