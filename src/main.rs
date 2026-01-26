@@ -93,26 +93,34 @@ fn main() {
     }));
 
     let mut scaling_mode = ScalingMode::Uniform;
+    let mut chosen: Option<Vec<PathBuf>> = None;
 
     loop {
         // Get terminal size
         let (cols, rows) = term::get_terminal_size();
         let (px_width, px_height) = term::get_terminal_pixel_size();
 
-        // Walk path and find images
+        // Walk path and find images (only if not already chosen)
         let images = find_images(&target_path, depth);
         if images.is_empty() {
             println!("No images found in {}", target_path);
             break;
         }
 
-        // Randomly choose up to 3 (or fewer if not enough)
-        let mut rng = rand::thread_rng();
-        let batch_size = 3.min(images.len());
-        let chosen: Vec<_> = images
-            .choose_multiple(&mut rng, batch_size)
-            .cloned()
-            .collect();
+        // Pick 3 new images, or reuse if mode was toggled
+        if chosen.is_none() {
+            let mut rng = rand::thread_rng();
+            let batch_size = 3.min(images.len());
+            chosen = Some(
+                images
+                    .choose_multiple(&mut rng, batch_size)
+                    .cloned()
+                    .collect()
+            );
+        }
+        
+        let batch_size = chosen.as_ref().map(|c| c.len()).unwrap_or(0);
+        let chosen_ref = chosen.as_ref().unwrap();
 
         // Calculate scaling based on mode
         let display_width_chars = 35u32;
@@ -123,7 +131,7 @@ fn main() {
         let mut total_height_rows = 0u32;
         let mut scale_factor = 1.0f32;
         
-        for path in &chosen {
+        for path in chosen_ref {
             match calc_image_height_rows(path, display_width_chars, pixels_per_row) {
                 Ok(h) => {
                     heights.push(h);
@@ -138,7 +146,7 @@ fn main() {
         }
 
         // Adjust scale factor based on mode
-        let padding_rows = (chosen.len() - 1) as u32;
+        let padding_rows = (batch_size.saturating_sub(1)) as u32;
         let total_needed = total_height_rows + padding_rows;
         
         match scaling_mode {
@@ -148,7 +156,7 @@ fn main() {
                 }
             }
             ScalingMode::EqualBudget => {
-                let per_image_rows = available_rows / chosen.len() as u32;
+                let per_image_rows = available_rows / batch_size as u32;
                 let max_img_rows = *heights.iter().max().unwrap_or(&1);
                 if max_img_rows > per_image_rows {
                     scale_factor = per_image_rows as f32 / max_img_rows as f32;
@@ -158,7 +166,7 @@ fn main() {
 
         // Load and display images (iTerm2 will auto-scale via width parameter)
         let mut displayed: Vec<(PathBuf, ImageInfo)> = Vec::new();
-        for path in &chosen {
+        for path in chosen_ref {
             match load_and_display_image(path, scale_factor) {
                 Ok(info) => {
                     let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
@@ -276,6 +284,11 @@ fn main() {
             }
         }
 
+        // If mode was toggled, restart with same images and new scale factor
+        if mode_toggled {
+            continue; // Jump back to top of main loop (recalc and reload with new mode)
+        }
+
         // Ask to continue, restart, or quit
         print!("\n[c]ontinue, [r]estart, [q]uit: ");
         io::stdout().flush().unwrap();
@@ -285,10 +298,12 @@ fn main() {
                 match c.to_lowercase().next() {
                     Some('c') => {
                         println!();
+                        chosen = None; // Pick new 3 images
                         break;
                     }
                     Some('r') => {
                         println!("\x1b[2J\x1b[H"); // Clear screen and restart loop
+                        chosen = None; // Pick new 3 images
                         break;
                     }
                     Some('q') => {
