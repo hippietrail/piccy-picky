@@ -1,9 +1,5 @@
-use objc::msg_send;
-use objc::runtime::Object;
-use objc::{class, sel, sel_impl};
 use rand::seq::SliceRandom;
 use std::env;
-use std::ffi::CString;
 use std::io::{self, Write, Cursor};
 use std::path::{Path, PathBuf};
 use image::GenericImageView;
@@ -36,15 +32,7 @@ fn main() {
     loop {
         // Get terminal size
         let (cols, rows) = term::get_terminal_size();
-        let (px_width, px_height) = term::get_terminal_pixel_size();
-        
-        // Calculate image height budget:
-        // Total pixels - (3 filename lines + 2 prompt lines)
-        // Use ceiling division to account for fractional rows
-        let pixels_per_row = px_height.max(1) / rows.max(1) as u32;
-        let reserved_rows = 5u32; // 3 filenames + 2 prompt lines
-        let reserved_height = reserved_rows * pixels_per_row;
-        let available_height = px_height.saturating_sub(reserved_height);
+        let (_, px_height) = term::get_terminal_pixel_size();
 
         // Walk path (depth 1) and find images
         let images = find_images(&target_path);
@@ -59,6 +47,36 @@ fn main() {
             .choose_multiple(&mut rng, 3.min(images.len()))
             .cloned()
             .collect();
+
+        // Pre-calculate heights to ensure all 3 fit
+        let display_width_chars = 35u32;
+        let pixels_per_row = px_height.max(1) / rows.max(1) as u32;
+        
+        let mut heights: Vec<u32> = Vec::new();
+        let mut total_height_rows = 0u32;
+        
+        for path in &chosen {
+            match calc_image_height_rows(path, display_width_chars, pixels_per_row) {
+                Ok(h) => {
+                    heights.push(h);
+                    total_height_rows += h;
+                }
+                Err(e) => {
+                    let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
+                    eprintln!("Failed to calc height {}: {}", abbrev, e);
+                    total_height_rows = u32::MAX; // Force failure
+                }
+            }
+        }
+
+        // Check if all 3 fit (with 1 row padding between each)
+        let padding_rows = (chosen.len() - 1) as u32;
+        let total_needed = total_height_rows + padding_rows;
+        let available_rows = rows.saturating_sub(5) as u32; // 5 rows reserved for filenames + prompts
+
+        if total_needed > available_rows {
+            println!("3 images need {} rows but only {} available. Showing what fits...", total_needed, available_rows);
+        }
 
         // Load and display images (iTerm2 will auto-scale via width parameter)
         let mut displayed = Vec::new();
@@ -81,18 +99,34 @@ fn main() {
             break;
         }
 
-        // Interactive menu for each image
-        for (idx, path) in displayed.iter().enumerate() {
-            let img_num = idx + 1;
-            let total = displayed.len();
-            loop {
-                let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
-                print!(
-                    "\n({}/{}) {}\n[k]eep, [b]in: ",
-                    img_num, total, abbrev
-                );
-                io::stdout().flush().unwrap();
+        // Interactive interface: show [k/b] [k/b] [k/b] with ANSI highlighting
+        print!("\n");
+        let mut decisions = Vec::new();
+        
+        for idx in 0..displayed.len() {
+            let abbrev = term::abbreviate_path(&displayed[idx], &target_path, cols as usize - 20);
+            
+            // Build display line with all 3 slots
+            let mut line = String::new();
+            for i in 0..displayed.len() {
+                if i == idx {
+                    // Current: bold
+                    line.push_str(&format!("\x1b[1m[k/b]\x1b[0m "));
+                } else if i < idx {
+                    // Done: show what was chosen
+                    line.push_str(&format!("[{}]   ", decisions[i]));
+                } else {
+                    // Upcoming: dim
+                    line.push_str("\x1b[2m[k/b]\x1b[0m ");
+                }
+            }
+            line.push_str(&format!("  {}", abbrev));
+            
+            print!("{}", line);
+            io::stdout().flush().unwrap();
 
+            // Read single keypress
+            loop {
                 let mut input = String::new();
                 if io::stdin().read_line(&mut input).is_err() {
                     break;
@@ -101,26 +135,29 @@ fn main() {
 
                 match choice.as_str() {
                     "k" => {
-                        println!("Kept.");
+                        decisions.push('k');
+                        println!();
                         break;
                     }
                     "b" => {
-                        if macos::move_to_trash(path) {
-                            println!("Binned.");
+                        if macos::move_to_trash(&displayed[idx]) {
+                            decisions.push('b');
+                            println!();
+                            break;
                         } else {
-                            println!("Failed to bin.");
+                            eprintln!("Failed to bin.");
                         }
-                        break;
                     }
                     _ if !choice.is_empty() => {
-                        println!("Invalid choice. Try again.");
+                        print!("\rInvalid. Try again: ");
+                        io::stdout().flush().unwrap();
                     }
                     _ => {}
                 }
             }
         }
 
-        // Ask user to continue or stop
+        // Ask to continue or quit
         print!("\n[c]ontinue, [q]uit: ");
         io::stdout().flush().unwrap();
         let mut input = String::new();
@@ -157,6 +194,26 @@ fn find_images(path: &str) -> Vec<PathBuf> {
     }
 
     images
+}
+
+/// Pre-calculate image display height in character rows
+pub fn calc_image_height_rows(path: &Path, display_width_chars: u32, pixels_per_char: u32) -> Result<u32, String> {
+    let img = image::open(path)
+        .map_err(|e| e.to_string())?;
+
+    let (w, h) = img.dimensions();
+    let aspect_ratio = h as f32 / w as f32;
+
+    // Display width in pixels (35 chars * 8 pixels/char ≈ 280px)
+    let display_width_px = display_width_chars * pixels_per_char;
+
+    // Calculate height in pixels using aspect ratio
+    let height_px = (display_width_px as f32 * aspect_ratio) as u32;
+
+    // Round UP to nearest character row
+    let height_rows = (height_px + pixels_per_char - 1) / pixels_per_char;
+
+    Ok(height_rows)
 }
 
 fn load_and_display_image(path: &Path) -> Result<(), String> {
