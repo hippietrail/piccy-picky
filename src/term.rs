@@ -1,5 +1,6 @@
-use libc::{ioctl, isatty, STDOUT_FILENO, TIOCGWINSZ};
+use libc::{ioctl, isatty, STDOUT_FILENO, TIOCGWINSZ, tcgetattr, tcsetattr, STDIN_FILENO, TCSANOW, termios, ECHO, ICANON};
 use std::path::{Path, PathBuf};
+use std::io::{self, Read};
 
 #[repr(C)]
 struct WinSize {
@@ -71,4 +72,42 @@ pub fn abbreviate_path(path: &Path, base_path: &str, max_width: usize) -> String
     };
 
     format!("{}{}{}", start, ellipsis, end)
+}
+
+/// Enable raw mode (no echo, no canonical mode) and return original termios for restoration
+pub fn enable_raw_mode() -> Result<termios, io::Error> {
+    unsafe {
+        let mut original: termios = std::mem::zeroed();
+        if tcgetattr(STDIN_FILENO, &mut original) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut raw = original;
+        raw.c_lflag &= !(ECHO | ICANON);
+        raw.c_cc[6] = 0; // VMIN = 0
+        raw.c_cc[5] = 0; // VTIME = 0
+
+        if tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(original)
+    }
+}
+
+/// Restore original termios
+pub fn disable_raw_mode(original: &termios) -> Result<(), io::Error> {
+    unsafe {
+        if tcsetattr(STDIN_FILENO, TCSANOW, original) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+/// Read a single character without echo
+pub fn read_single_char() -> Result<char, io::Error> {
+    let mut buf = [0u8; 1];
+    io::stdin().read_exact(&mut buf)?;
+    Ok(buf[0] as char)
 }

@@ -16,18 +16,30 @@ fn main() {
 
     let mut target_path = args[1].clone();
     
-    // Try to access the path; if it fails, ask user via NSOpenPanel
-    if !Path::new(&target_path).exists() || 
-       std::fs::read_dir(&target_path).is_err() {
-        eprintln!("No access to: {}. Opening folder picker...", target_path);
-        if let Some(chosen) = macos::request_folder_access(&target_path) {
-            target_path = chosen.to_string_lossy().to_string();
-            println!("Selected: {}", target_path);
-        } else {
-            eprintln!("No folder selected.");
-            std::process::exit(1);
-        }
+    // Try to access the path; if it fails, show permission instructions
+    if !Path::new(&target_path).exists() {
+        eprintln!("Path does not exist: {}", target_path);
+        std::process::exit(1);
     }
+    
+    if std::fs::read_dir(&target_path).is_err() {
+        eprintln!("\n❌ No permission to access: {}", target_path);
+        eprintln!("\n📋 To fix this on macOS:");
+        eprintln!("   1. System Settings > Privacy & Security > Files and Folders");
+        eprintln!("   2. Find iTerm2 and grant it access to this folder");
+        eprintln!("\n   Also add iTerm2 to Full Disk Access:");
+        eprintln!("   System Settings > Privacy & Security > Full Disk Access");
+        std::process::exit(1);
+    }
+
+    // Enable raw mode for interactive input
+    let original_termios = term::enable_raw_mode()
+        .expect("Failed to enable raw mode");
+    
+    // Ensure we restore on exit
+    let _restore = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Deferred cleanup via drop
+    }));
 
     loop {
         // Get terminal size
@@ -127,32 +139,31 @@ fn main() {
 
             // Read single keypress
             loop {
-                let mut input = String::new();
-                if io::stdin().read_line(&mut input).is_err() {
-                    break;
-                }
-                let choice = input.trim().to_lowercase();
-
-                match choice.as_str() {
-                    "k" => {
-                        decisions.push('k');
-                        println!();
-                        break;
-                    }
-                    "b" => {
-                        if macos::move_to_trash(&displayed[idx]) {
-                            decisions.push('b');
+                if let Ok(c) = term::read_single_char() {
+                    match c.to_lowercase().next() {
+                        Some('k') => {
+                            decisions.push('k');
                             println!();
                             break;
-                        } else {
-                            eprintln!("Failed to bin.");
+                        }
+                        Some('b') => {
+                            if macos::move_to_trash(&displayed[idx]) {
+                                decisions.push('b');
+                                println!();
+                                break;
+                            } else {
+                                eprintln!("\nFailed to bin.");
+                                print!("Try again: ");
+                                io::stdout().flush().unwrap();
+                            }
+                        }
+                        _ => {
+                            print!("\x07"); // Bell
+                            io::stdout().flush().unwrap();
                         }
                     }
-                    _ if !choice.is_empty() => {
-                        print!("\rInvalid. Try again: ");
-                        io::stdout().flush().unwrap();
-                    }
-                    _ => {}
+                } else {
+                    break;
                 }
             }
         }
@@ -160,12 +171,32 @@ fn main() {
         // Ask to continue or quit
         print!("\n[c]ontinue, [q]uit: ");
         io::stdout().flush().unwrap();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        if input.trim().to_lowercase() == "q" {
-            break;
+        
+        loop {
+            if let Ok(c) = term::read_single_char() {
+                match c.to_lowercase().next() {
+                    Some('c') => {
+                        println!();
+                        break;
+                    }
+                    Some('q') => {
+                        println!();
+                        term::disable_raw_mode(&original_termios).ok();
+                        std::process::exit(0);
+                    }
+                    _ => {
+                        print!("\x07"); // Bell
+                        io::stdout().flush().unwrap();
+                    }
+                }
+            } else {
+                break;
+            }
         }
     }
+    
+    // Restore terminal
+    let _ = term::disable_raw_mode(&original_termios);
 }
 
 fn find_images(path: &str) -> Vec<PathBuf> {
