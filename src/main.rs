@@ -36,7 +36,13 @@ fn main() {
     loop {
         // Get terminal size
         let (cols, rows) = term::get_terminal_size();
-        println!("Terminal: {}x{}", cols, rows);
+        let (px_width, px_height) = term::get_terminal_pixel_size();
+        
+        // Calculate image height budget:
+        // Total pixels - (3 filename lines + 2 prompt lines + padding)
+        let filename_line_height = px_height / rows as u32; // pixels per char row
+        let reserved_height = filename_line_height * 5; // 3 filenames + 2 prompt
+        let available_height = px_height.saturating_sub(reserved_height);
 
         // Walk path (depth 1) and find images
         let images = find_images(&target_path);
@@ -57,11 +63,13 @@ fn main() {
         for path in &chosen {
             match load_and_display_image(path) {
                 Ok(_) => {
-                    println!("{}", path.display());
+                    let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
+                    println!("{}", abbrev);
                     displayed.push(path.clone());
                 }
                 Err(e) => {
-                    eprintln!("Failed to load {}: {}", path.display(), e);
+                    let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
+                    eprintln!("Failed to load {}: {}", abbrev, e);
                 }
             }
         }
