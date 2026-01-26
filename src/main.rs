@@ -144,12 +144,14 @@ fn main() {
                         Some('k') => {
                             decisions.push('k');
                             println!();
+                            term::drain_input(); // Clear any buffered repeats
                             break;
                         }
                         Some('b') => {
                             if macos::move_to_trash(&displayed[idx]) {
                                 decisions.push('b');
                                 println!();
+                                term::drain_input(); // Clear any buffered repeats
                                 break;
                             } else {
                                 eprintln!("\nFailed to bin.");

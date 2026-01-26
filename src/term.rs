@@ -111,3 +111,11 @@ pub fn read_single_char() -> Result<char, io::Error> {
     io::stdin().read_exact(&mut buf)?;
     Ok(buf[0] as char)
 }
+
+/// Drain any buffered input (clear pending keypresses)
+pub fn drain_input() {
+    let mut buf = [0u8; 1];
+    while io::stdin().read_exact(&mut buf).is_ok() {
+        // Keep reading until no more data
+    }
+}
