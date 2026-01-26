@@ -89,10 +89,8 @@ fn main() {
             .choose_multiple(&mut rng, batch_size)
             .cloned()
             .collect();
-        
-        println!("📸 Picked {} images out of {}", batch_size, images.len());
 
-        // Pre-calculate heights to ensure all 3 fit
+        // Pre-calculate heights to ensure all fit
         let display_width_chars = 35u32;
         let pixels_per_row = px_height.max(1) / rows.max(1) as u32;
         
@@ -143,8 +141,10 @@ fn main() {
             break;
         }
 
-        // Interactive interface: show [k/b] [k/b] [k/b] with ANSI highlighting
-        print!("\n");
+        // Show count before prompts
+        println!("\n📸 Picked {} images out of {}\n", batch_size, images.len());
+
+        // Interactive interface: show [k/b/i] [k/b/i] [k/b/i] with ANSI highlighting
         let mut decisions = Vec::new();
         
         for idx in 0..displayed.len() {
