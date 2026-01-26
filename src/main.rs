@@ -7,6 +7,28 @@ use image::GenericImageView;
 mod macos;
 mod term;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ScalingMode {
+    Uniform,      // All 3 scaled equally to fit
+    EqualBudget,  // Each gets equal row allocation
+}
+
+impl ScalingMode {
+    fn indicator(&self) -> &'static str {
+        match self {
+            ScalingMode::Uniform => "📏",
+            ScalingMode::EqualBudget => "🎯",
+        }
+    }
+    
+    fn toggle(&self) -> Self {
+        match self {
+            ScalingMode::Uniform => ScalingMode::EqualBudget,
+            ScalingMode::EqualBudget => ScalingMode::Uniform,
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -70,6 +92,8 @@ fn main() {
         // Deferred cleanup via drop
     }));
 
+    let mut scaling_mode = ScalingMode::Uniform;
+
     loop {
         // Get terminal size
         let (cols, rows) = term::get_terminal_size();
@@ -90,12 +114,14 @@ fn main() {
             .cloned()
             .collect();
 
-        // Pre-calculate heights to ensure all fit
+        // Calculate scaling based on mode
         let display_width_chars = 35u32;
         let pixels_per_row = px_height.max(1) / rows.max(1) as u32;
+        let available_rows = rows.saturating_sub(5) as u32; // 5 rows reserved
         
         let mut heights: Vec<u32> = Vec::new();
         let mut total_height_rows = 0u32;
+        let mut scale_factor = 1.0f32;
         
         for path in &chosen {
             match calc_image_height_rows(path, display_width_chars, pixels_per_row) {
@@ -106,24 +132,34 @@ fn main() {
                 Err(e) => {
                     let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
                     eprintln!("Failed to calc height {}: {}", abbrev, e);
-                    total_height_rows = u32::MAX; // Force failure
+                    total_height_rows = u32::MAX;
                 }
             }
         }
 
-        // Check if all 3 fit (with 1 row padding between each)
+        // Adjust scale factor based on mode
         let padding_rows = (chosen.len() - 1) as u32;
         let total_needed = total_height_rows + padding_rows;
-        let available_rows = rows.saturating_sub(5) as u32; // 5 rows reserved for filenames + prompts
-
-        if total_needed > available_rows {
-            println!("3 images need {} rows but only {} available. Showing what fits...", total_needed, available_rows);
+        
+        match scaling_mode {
+            ScalingMode::Uniform => {
+                if total_needed > available_rows {
+                    scale_factor = available_rows as f32 / total_needed as f32;
+                }
+            }
+            ScalingMode::EqualBudget => {
+                let per_image_rows = available_rows / chosen.len() as u32;
+                let max_img_rows = *heights.iter().max().unwrap_or(&1);
+                if max_img_rows > per_image_rows {
+                    scale_factor = per_image_rows as f32 / max_img_rows as f32;
+                }
+            }
         }
 
         // Load and display images (iTerm2 will auto-scale via width parameter)
         let mut displayed: Vec<(PathBuf, ImageInfo)> = Vec::new();
         for path in &chosen {
-            match load_and_display_image(path) {
+            match load_and_display_image(path, scale_factor) {
                 Ok(info) => {
                     let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
                     println!("{}", abbrev);
@@ -141,13 +177,17 @@ fn main() {
             break;
         }
 
-        // Show count before prompts
-        println!("\n📸 Picked {} images out of {}\n", batch_size, images.len());
+        // Show count before prompts with mode indicator
+        println!("\n📸 Picked {} images out of {} {}", batch_size, images.len(), scaling_mode.indicator());
 
         // Interactive interface: show [k/b/i] [k/b/i] [k/b/i] with ANSI highlighting
         let mut decisions = Vec::new();
+        let mut mode_toggled = false;
         
         for idx in 0..displayed.len() {
+            if mode_toggled {
+                break;
+            }
             let (path, info) = &displayed[idx];
             let abbrev = term::abbreviate_path(path, &target_path, cols as usize - 20);
             
@@ -183,6 +223,13 @@ fn main() {
                     }
                     
                     match c.to_lowercase().next() {
+                        Some('m') => {
+                            // Toggle scaling mode and restart this batch
+                            scaling_mode = scaling_mode.toggle();
+                            println!("\x1b[2J\x1b[H"); // Clear screen
+                            mode_toggled = true;
+                            break; // Exit inner loop
+                        }
                         Some('k') => {
                             decisions.push('k');
                             println!(); // Move to next line after decision
@@ -332,18 +379,18 @@ pub struct ImageInfo {
     pub scale_factor: f32,
 }
 
-fn load_and_display_image(path: &Path) -> Result<ImageInfo, String> {
+fn load_and_display_image(path: &Path, layout_scale: f32) -> Result<ImageInfo, String> {
     let img = image::open(path)
         .map_err(|e| e.to_string())?;
 
-    // Only scale down if image is extremely large (to avoid huge base64)
+    // Scale with layout_scale, but also don't exceed max dimension
     let (w, h) = img.dimensions();
     let max_dim = 2000u32;
     let scale = if w > max_dim || h > max_dim {
         (max_dim as f32 / w.max(h) as f32).min(1.0)
     } else {
         1.0
-    };
+    } * layout_scale;
 
     let scaled_w = (w as f32 * scale) as u32;
     let scaled_h = (h as f32 * scale) as u32;
