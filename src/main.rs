@@ -223,11 +223,25 @@ fn main() {
                 if let Ok(c) = term::read_single_char() {
                     let code = c as u32;
                     
-                    // Ctrl+L = clear screen
+                    // Ctrl+L = clear screen and redraw undecided images
                     if code == 12 {
                         println!("\x1b[2J\x1b[H"); // Clear screen and move cursor home
-                        // Restart from beginning
-                        continue; // Skip to next iteration
+                        
+                        // Redraw images not yet decided (idx..displayed.len())
+                        for i in idx..displayed.len() {
+                            let (path, _) = &displayed[i];
+                            match load_and_display_image(path, scale_factor) {
+                                Ok(_) => {
+                                    let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
+                                    println!("{}", abbrev);
+                                }
+                                Err(_) => {} // Silently skip redraw errors
+                            }
+                        }
+                        
+                        // Redraw image count and continue with current prompt
+                        println!("\n📸 Picked {} images out of {} {}", batch_size, images.len(), scaling_mode.indicator());
+                        continue; // Skip to next iteration of inner prompt loop
                     }
                     
                     match c.to_lowercase().next() {
