@@ -52,14 +52,10 @@ fn main() {
             .cloned()
             .collect();
 
-        // Calculate max image height (fit 3 vertically)
-        let max_img_height = (rows as u32).saturating_sub(10) / 3;
-        let max_img_width = cols as u32;
-
-        // Load, scale, and display images
+        // Load and display images (iTerm2 will auto-scale via width parameter)
         let mut displayed = Vec::new();
         for path in &chosen {
-            match load_and_display_image(path, max_img_width, max_img_height) {
+            match load_and_display_image(path) {
                 Ok(_) => {
                     println!("{}", path.display());
                     displayed.push(path.clone());
@@ -154,34 +150,38 @@ fn find_images(path: &str) -> Vec<PathBuf> {
     images
 }
 
-fn load_and_display_image(path: &Path, max_width: u32, max_height: u32) -> Result<(), String> {
+fn load_and_display_image(path: &Path) -> Result<(), String> {
     let img = image::open(path)
         .map_err(|e| e.to_string())?;
 
-    // Calculate scaling to fit within bounds (don't scale up)
+    // Only scale down if image is extremely large (to avoid huge base64)
     let (w, h) = img.dimensions();
-    let scale = if w > max_width || h > max_height {
-        (max_width as f32 / w as f32).min(max_height as f32 / h as f32).min(1.0)
+    let max_dim = 2000u32;
+    let scale = if w > max_dim || h > max_dim {
+        (max_dim as f32 / w.max(h) as f32).min(1.0)
     } else {
         1.0
     };
 
-    let new_w = (w as f32 * scale) as u32;
-    let new_h = (h as f32 * scale) as u32;
-
-    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
+    let img_to_encode = if scale < 1.0 {
+        let new_w = (w as f32 * scale) as u32;
+        let new_h = (h as f32 * scale) as u32;
+        img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
 
     // Encode to PNG and display
     let mut png_data = Vec::new();
     let mut cursor = Cursor::new(&mut png_data);
-    resized.write_to(&mut cursor, image::ImageFormat::Png)
+    img_to_encode.write_to(&mut cursor, image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
 
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&png_data);
     let size = encoded.len();
-    // Let iTerm2 auto-scale; use character-based width to fit terminal
-    println!("\x1b]1337;File=name=image.png;size={};inline=1;width=30c;base64:{}\x07", size, encoded);
+    // Display at ~35 character width (lets iTerm2 auto-scale height preserving aspect ratio)
+    println!("\x1b]1337;File=name=image.png;size={};inline=1;width=35c;base64:{}\x07", size, encoded);
 
     Ok(())
 }
