@@ -2,7 +2,34 @@ use objc::msg_send;
 use objc::runtime::Object;
 use objc::{class, sel, sel_impl};
 use std::ffi::CString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub fn request_folder_access(initial_path: &str) -> Option<PathBuf> {
+    unsafe {
+        let panel: *mut Object = msg_send![class!(NSOpenPanel), openPanel];
+        let _: () = msg_send![panel, setCanChooseFiles:false];
+        let _: () = msg_send![panel, setCanChooseDirectories:true];
+        let _: () = msg_send![panel, setAllowsMultipleSelection:false];
+        
+        // Set initial directory
+        let path_str = CString::new(initial_path).unwrap();
+        let path_obj: *mut Object = msg_send![class!(NSString), stringWithUTF8String: path_str.as_ptr()];
+        let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_obj];
+        let _: () = msg_send![panel, setDirectoryURL:url];
+        
+        // Run modal (blocks until user chooses)
+        let result: i64 = msg_send![panel, runModal];
+        
+        if result == 1 { // NSModalResponseOK
+            let selected_url: *mut Object = msg_send![panel, URL];
+            let path_obj: *mut Object = msg_send![selected_url, path];
+            let c_str: *const i8 = msg_send![path_obj, UTF8String];
+            let path_str = std::ffi::CStr::from_ptr(c_str).to_string_lossy();
+            return Some(PathBuf::from(path_str.to_string()));
+        }
+    }
+    None
+}
 
 pub fn move_to_trash(path: &Path) -> bool {
     unsafe {

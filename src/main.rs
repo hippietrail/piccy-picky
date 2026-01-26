@@ -18,10 +18,19 @@ fn main() {
         std::process::exit(1);
     }
 
-    let target_path = &args[1];
-    if !Path::new(target_path).exists() {
-        eprintln!("Path does not exist: {}", target_path);
-        std::process::exit(1);
+    let mut target_path = args[1].clone();
+    
+    // Try to access the path; if it fails, ask user via NSOpenPanel
+    if !Path::new(&target_path).exists() || 
+       std::fs::read_dir(&target_path).is_err() {
+        eprintln!("No access to: {}. Opening folder picker...", target_path);
+        if let Some(chosen) = macos::request_folder_access(&target_path) {
+            target_path = chosen.to_string_lossy().to_string();
+            println!("Selected: {}", target_path);
+        } else {
+            eprintln!("No folder selected.");
+            std::process::exit(1);
+        }
     }
 
     loop {
@@ -30,7 +39,7 @@ fn main() {
         println!("Terminal: {}x{}", cols, rows);
 
         // Walk path (depth 1) and find images
-        let images = find_images(target_path);
+        let images = find_images(&target_path);
         if images.is_empty() {
             println!("No images found in {}", target_path);
             break;
@@ -181,7 +190,9 @@ fn load_and_display_image(path: &Path, max_width: u32, max_height: u32) -> Resul
 
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&png_data);
-    println!("\x1b]1337;File=name=image.png;inline=1;width={}px;height={}px;base64:\r{}\x07", new_w, new_h, encoded);
+    let size = png_data.len();
+    println!("\x1b]1337;File=name=image.png;size={};inline=1;width={}px;height={}px;base64:{}\x07", size, new_w, new_h, encoded);
+    println!();
 
     Ok(())
 }
