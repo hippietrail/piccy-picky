@@ -118,49 +118,46 @@ fn main() {
         for idx in 0..displayed.len() {
             let abbrev = term::abbreviate_path(&displayed[idx], &target_path, cols as usize - 20);
             
-            // Build display line with all 3 slots
-            let mut line = String::new();
-            for i in 0..displayed.len() {
-                if i == idx {
-                    // Current: bold
-                    line.push_str(&format!("\x1b[1m[k/b]\x1b[0m "));
-                } else if i < idx {
-                    // Done: show what was chosen
-                    line.push_str(&format!("[{}]   ", decisions[i]));
-                } else {
-                    // Upcoming: dim
-                    line.push_str("\x1b[2m[k/b]\x1b[0m ");
-                }
-            }
-            line.push_str(&format!("  {}", abbrev));
-            
-            print!("{}", line);
-            io::stdout().flush().unwrap();
-
-            // Read single keypress
             loop {
+                // Build display line with all 3 slots
+                let mut line = String::new();
+                for i in 0..displayed.len() {
+                    if i == idx {
+                        // Current: bold
+                        line.push_str(&format!("\x1b[1m[k/b]\x1b[0m "));
+                    } else if i < idx {
+                        // Done: show what was chosen
+                        line.push_str(&format!("[{}]   ", decisions[i]));
+                    } else {
+                        // Upcoming: dim
+                        line.push_str("\x1b[2m[k/b]\x1b[0m ");
+                    }
+                }
+                line.push_str(&format!("  {}", abbrev));
+                
+                print!("{}\r", line); // \r = carriage return (overwrite current line)
+                io::stdout().flush().unwrap();
+
+                // Read single keypress
                 if let Ok(c) = term::read_single_char() {
                     match c.to_lowercase().next() {
                         Some('k') => {
                             decisions.push('k');
-                            println!();
-                            term::drain_input(); // Clear any buffered repeats
+                            println!(); // Move to next line after decision
                             break;
                         }
                         Some('b') => {
                             if macos::move_to_trash(&displayed[idx]) {
                                 decisions.push('b');
-                                println!();
-                                term::drain_input(); // Clear any buffered repeats
+                                println!(); // Move to next line after decision
                                 break;
                             } else {
-                                eprintln!("\nFailed to bin.");
-                                print!("Try again: ");
+                                print!("\x07"); // Bell on failure
                                 io::stdout().flush().unwrap();
                             }
                         }
                         _ => {
-                            print!("\x07"); // Bell
+                            print!("\x07"); // Bell on invalid input
                             io::stdout().flush().unwrap();
                         }
                     }
