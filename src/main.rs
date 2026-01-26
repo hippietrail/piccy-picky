@@ -44,7 +44,7 @@ fn main() {
     loop {
         // Get terminal size
         let (cols, rows) = term::get_terminal_size();
-        let (_, px_height) = term::get_terminal_pixel_size();
+        let (px_width, px_height) = term::get_terminal_pixel_size();
 
         // Walk path (depth 1) and find images
         let images = find_images(&target_path);
@@ -91,13 +91,13 @@ fn main() {
         }
 
         // Load and display images (iTerm2 will auto-scale via width parameter)
-        let mut displayed = Vec::new();
+        let mut displayed: Vec<(PathBuf, ImageInfo)> = Vec::new();
         for path in &chosen {
             match load_and_display_image(path) {
-                Ok(_) => {
+                Ok(info) => {
                     let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
                     println!("{}", abbrev);
-                    displayed.push(path.clone());
+                    displayed.push((path.clone(), info));
                 }
                 Err(e) => {
                     let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
@@ -116,7 +116,8 @@ fn main() {
         let mut decisions = Vec::new();
         
         for idx in 0..displayed.len() {
-            let abbrev = term::abbreviate_path(&displayed[idx], &target_path, cols as usize - 20);
+            let (path, info) = &displayed[idx];
+            let abbrev = term::abbreviate_path(path, &target_path, cols as usize - 20);
             
             loop {
                 // Build display line with all 3 slots
@@ -124,13 +125,13 @@ fn main() {
                 for i in 0..displayed.len() {
                     if i == idx {
                         // Current: bold
-                        line.push_str(&format!("\x1b[1m[k/b]\x1b[0m "));
+                        line.push_str(&format!("\x1b[1m[k/b/i]\x1b[0m "));
                     } else if i < idx {
                         // Done: show what was chosen
-                        line.push_str(&format!("[{}]   ", decisions[i]));
+                        line.push_str(&format!("[{}]     ", decisions[i]));
                     } else {
                         // Upcoming: dim
-                        line.push_str("\x1b[2m[k/b]\x1b[0m ");
+                        line.push_str("\x1b[2m[k/b/i]\x1b[0m ");
                     }
                 }
                 line.push_str(&format!("  {}", abbrev));
@@ -140,6 +141,15 @@ fn main() {
 
                 // Read single keypress
                 if let Ok(c) = term::read_single_char() {
+                    let code = c as u32;
+                    
+                    // Ctrl+L = clear screen
+                    if code == 12 {
+                        println!("\x1b[2J\x1b[H"); // Clear screen and move cursor home
+                        // Restart from beginning
+                        continue; // Skip to next iteration
+                    }
+                    
                     match c.to_lowercase().next() {
                         Some('k') => {
                             decisions.push('k');
@@ -147,7 +157,7 @@ fn main() {
                             break;
                         }
                         Some('b') => {
-                            if macos::move_to_trash(&displayed[idx]) {
+                            if macos::move_to_trash(path) {
                                 decisions.push('b');
                                 println!(); // Move to next line after decision
                                 break;
@@ -155,6 +165,26 @@ fn main() {
                                 print!("\x07"); // Bell on failure
                                 io::stdout().flush().unwrap();
                             }
+                        }
+                        Some('i') => {
+                            // Print debug info
+                            println!("\n\n📊 Image Info:");
+                            println!("  Terminal:           {} cols × {} rows", cols, rows);
+                            println!("  Terminal pixels:    {} × {} px", px_width, px_height);
+                            let px_per_char = px_height / rows as u32;
+                            println!("  Font size:          {} × {} px/char", 8, px_per_char);
+                            println!("  Original image:     {} × {} px", info.orig_w, info.orig_h);
+                            println!("  Scaling factor:     {:.2}", info.scale_factor);
+                            println!("  Scaled image:       {} × {} px", info.scaled_w, info.scaled_h);
+                            println!("  Display in term:    35 chars × ~{} chars", 
+                                     (info.scaled_h + px_per_char - 1) / px_per_char);
+                            println!("  (press any key to continue)");
+                            io::stdout().flush().unwrap();
+                            
+                            // Wait for keypress
+                            let _ = term::read_single_char();
+                            println!("\n"); // Clear and restart
+                            continue;
                         }
                         _ => {
                             print!("\x07"); // Bell on invalid input
@@ -167,8 +197,8 @@ fn main() {
             }
         }
 
-        // Ask to continue or quit
-        print!("\n[c]ontinue, [q]uit: ");
+        // Ask to continue, restart, or quit
+        print!("\n[c]ontinue, [r]estart, [q]uit: ");
         io::stdout().flush().unwrap();
         
         loop {
@@ -176,6 +206,10 @@ fn main() {
                 match c.to_lowercase().next() {
                     Some('c') => {
                         println!();
+                        break;
+                    }
+                    Some('r') => {
+                        println!("\x1b[2J\x1b[H"); // Clear screen and restart loop
                         break;
                     }
                     Some('q') => {
@@ -246,7 +280,15 @@ pub fn calc_image_height_rows(path: &Path, display_width_chars: u32, pixels_per_
     Ok(height_rows)
 }
 
-fn load_and_display_image(path: &Path) -> Result<(), String> {
+pub struct ImageInfo {
+    pub orig_w: u32,
+    pub orig_h: u32,
+    pub scaled_w: u32,
+    pub scaled_h: u32,
+    pub scale_factor: f32,
+}
+
+fn load_and_display_image(path: &Path) -> Result<ImageInfo, String> {
     let img = image::open(path)
         .map_err(|e| e.to_string())?;
 
@@ -259,10 +301,11 @@ fn load_and_display_image(path: &Path) -> Result<(), String> {
         1.0
     };
 
+    let scaled_w = (w as f32 * scale) as u32;
+    let scaled_h = (h as f32 * scale) as u32;
+
     let img_to_encode = if scale < 1.0 {
-        let new_w = (w as f32 * scale) as u32;
-        let new_h = (h as f32 * scale) as u32;
-        img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3)
+        img.resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Lanczos3)
     } else {
         img
     };
@@ -279,5 +322,11 @@ fn load_and_display_image(path: &Path) -> Result<(), String> {
     // Display at ~35 character width (lets iTerm2 auto-scale height preserving aspect ratio)
     println!("\x1b]1337;File=name=image.png;size={};inline=1;width=35c;base64:{}\x07", size, encoded);
 
-    Ok(())
+    Ok(ImageInfo {
+        orig_w: w,
+        orig_h: h,
+        scaled_w,
+        scaled_h,
+        scale_factor: scale,
+    })
 }
