@@ -39,9 +39,11 @@ fn main() {
         let (px_width, px_height) = term::get_terminal_pixel_size();
         
         // Calculate image height budget:
-        // Total pixels - (3 filename lines + 2 prompt lines + padding)
-        let filename_line_height = px_height / rows as u32; // pixels per char row
-        let reserved_height = filename_line_height * 5; // 3 filenames + 2 prompt
+        // Total pixels - (3 filename lines + 2 prompt lines)
+        // Use ceiling division to account for fractional rows
+        let pixels_per_row = px_height.max(1) / rows.max(1) as u32;
+        let reserved_rows = 5u32; // 3 filenames + 2 prompt lines
+        let reserved_height = reserved_rows * pixels_per_row;
         let available_height = px_height.saturating_sub(reserved_height);
 
         // Walk path (depth 1) and find images
@@ -80,11 +82,14 @@ fn main() {
         }
 
         // Interactive menu for each image
-        for path in &displayed {
+        for (idx, path) in displayed.iter().enumerate() {
+            let img_num = idx + 1;
+            let total = displayed.len();
             loop {
+                let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
                 print!(
-                    "\n{}\n[k]eep, [b]in, [s]kip: ",
-                    path.display()
+                    "\n({}/{}) {}\n[k]eep, [b]in: ",
+                    img_num, total, abbrev
                 );
                 io::stdout().flush().unwrap();
 
@@ -105,10 +110,6 @@ fn main() {
                         } else {
                             println!("Failed to bin.");
                         }
-                        break;
-                    }
-                    "s" => {
-                        println!("Skipped.");
                         break;
                     }
                     _ if !choice.is_empty() => {
