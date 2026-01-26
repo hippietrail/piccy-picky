@@ -10,11 +10,40 @@ mod term;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: piccy-picky <path>");
+        eprintln!("Usage: piccy-picky [OPTIONS] <path>");
+        eprintln!("Options:");
+        eprintln!("  -d, --depth <N>    Search depth (default: 1)");
         std::process::exit(1);
     }
 
-    let mut target_path = args[1].clone();
+    // Parse CLI args
+    let mut target_path = String::new();
+    let mut depth = 1usize;
+    let mut i = 1;
+    
+    while i < args.len() {
+        match args[i].as_str() {
+            "-d" | "--depth" => {
+                i += 1;
+                if i < args.len() {
+                    depth = args[i].parse().unwrap_or(1);
+                }
+            }
+            arg if !arg.starts_with('-') => {
+                target_path = arg.to_string();
+            }
+            _ => {
+                eprintln!("Unknown option: {}", args[i]);
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+    
+    if target_path.is_empty() {
+        eprintln!("Error: path required");
+        std::process::exit(1);
+    }
     
     // Try to access the path; if it fails, show permission instructions
     if !Path::new(&target_path).exists() {
@@ -46,19 +75,22 @@ fn main() {
         let (cols, rows) = term::get_terminal_size();
         let (px_width, px_height) = term::get_terminal_pixel_size();
 
-        // Walk path (depth 1) and find images
-        let images = find_images(&target_path);
+        // Walk path and find images
+        let images = find_images(&target_path, depth);
         if images.is_empty() {
             println!("No images found in {}", target_path);
             break;
         }
 
-        // Randomly choose 3 (or fewer if not enough)
+        // Randomly choose up to 3 (or fewer if not enough)
         let mut rng = rand::thread_rng();
+        let batch_size = 3.min(images.len());
         let chosen: Vec<_> = images
-            .choose_multiple(&mut rng, 3.min(images.len()))
+            .choose_multiple(&mut rng, batch_size)
             .cloned()
             .collect();
+        
+        println!("📸 Picked {} images out of {}", batch_size, images.len());
 
         // Pre-calculate heights to ensure all 3 fit
         let display_width_chars = 35u32;
@@ -232,32 +264,44 @@ fn main() {
     let _ = term::disable_raw_mode(&original_termios);
 }
 
-fn find_images(path: &str) -> Vec<PathBuf> {
+fn find_images(path: &str, max_depth: usize) -> Vec<PathBuf> {
     let mut images = Vec::new();
+    find_images_recursive(path, 0, max_depth, &mut images);
+    images
+}
+
+fn find_images_recursive(path: &str, current_depth: usize, max_depth: usize, images: &mut Vec<PathBuf>) {
     let image_extensions = ["jpg", "jpeg", "png", "gif", "webp", "bmp"];
 
-    // Use std fs to enumerate only depth-1 (direct children only)
+    if current_depth > max_depth {
+        return;
+    }
+
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
             if let Ok(metadata) = entry.metadata() {
-                // Skip directories
-                if metadata.is_dir() {
-                    continue;
-                }
-
                 let path_buf = entry.path();
-                if let Some(ext) = path_buf.extension() {
-                    if let Some(ext_str) = ext.to_str() {
-                        if image_extensions.contains(&ext_str.to_lowercase().as_str()) {
-                            images.push(path_buf);
+
+                if metadata.is_dir() {
+                    // Recurse into subdirectories if we haven't hit max depth
+                    if current_depth < max_depth {
+                        if let Some(path_str) = path_buf.to_str() {
+                            find_images_recursive(path_str, current_depth + 1, max_depth, images);
+                        }
+                    }
+                } else {
+                    // Check if it's an image file
+                    if let Some(ext) = path_buf.extension() {
+                        if let Some(ext_str) = ext.to_str() {
+                            if image_extensions.contains(&ext_str.to_lowercase().as_str()) {
+                                images.push(path_buf);
+                            }
                         }
                     }
                 }
             }
         }
     }
-
-    images
 }
 
 /// Pre-calculate image display height in character rows
