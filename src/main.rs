@@ -76,29 +76,32 @@ fn main() {
                 io::stdout().flush().unwrap();
 
                 let mut input = String::new();
-                io::stdin().read_line(&mut input).unwrap();
+                if io::stdin().read_line(&mut input).is_err() {
+                    break;
+                }
                 let choice = input.trim().to_lowercase();
 
                 match choice.as_str() {
                     "k" => {
-                        println!("Kept: {}", path.display());
+                        println!("Kept.");
                         break;
                     }
                     "b" => {
                         if macos::move_to_trash(path) {
-                            println!("Binned: {}", path.display());
+                            println!("Binned.");
                         } else {
-                            println!("Failed to bin: {}", path.display());
+                            println!("Failed to bin.");
                         }
                         break;
                     }
                     "s" => {
-                        println!("Skipped: {}", path.display());
+                        println!("Skipped.");
                         break;
                     }
-                    _ => {
+                    _ if !choice.is_empty() => {
                         println!("Invalid choice. Try again.");
                     }
+                    _ => {}
                 }
             }
         }
