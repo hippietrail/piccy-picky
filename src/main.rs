@@ -34,13 +34,15 @@ fn main() {
     if args.len() < 2 {
         eprintln!("Usage: piccy-picky [OPTIONS] <path>");
         eprintln!("Options:");
-        eprintln!("  -d, --depth <N>    Search depth (default: 1)");
+        eprintln!("  -d, --depth <N>      Search depth (default: 1)");
+        eprintln!("  --test-search        Test file search only (print results and exit)");
         std::process::exit(1);
     }
 
     // Parse CLI args
     let mut target_path = String::new();
     let mut depth = 1usize;
+    let mut test_search = false;
     let mut i = 1;
     
     while i < args.len() {
@@ -50,6 +52,9 @@ fn main() {
                 if i < args.len() {
                     depth = args[i].parse().unwrap_or(1);
                 }
+            }
+            "--test-search" => {
+                test_search = true;
             }
             arg if !arg.starts_with('-') => {
                 target_path = arg.to_string();
@@ -65,6 +70,19 @@ fn main() {
     if target_path.is_empty() {
         eprintln!("Error: path required");
         std::process::exit(1);
+    }
+    
+    // If test mode, just search and print results
+    if test_search {
+        let images = macos::find_images(&target_path, depth);
+        println!("Found {} image files:", images.len());
+        for (idx, img) in images.iter().take(10).enumerate() {
+            println!("  {}. {}", idx + 1, img.display());
+        }
+        if images.len() > 10 {
+            println!("  ... and {} more", images.len() - 10);
+        }
+        std::process::exit(0);
     }
     
     // Try to access the path; if it fails, show permission instructions
