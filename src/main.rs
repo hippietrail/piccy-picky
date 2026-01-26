@@ -130,31 +130,20 @@ fn find_images(path: &str) -> Vec<PathBuf> {
     let mut images = Vec::new();
     let image_extensions = ["jpg", "jpeg", "png", "gif", "webp", "bmp"];
 
-    unsafe {
-        let fm: *mut Object = msg_send![class!(NSFileManager), defaultManager];
-
-        let path_ns = CString::new(path).unwrap();
-        let path_obj: *mut Object = msg_send![class!(NSString), stringWithUTF8String: path_ns.as_ptr()];
-
-        let enumerator: *mut Object = msg_send![fm, enumeratorAtPath: path_obj];
-
-        if !enumerator.is_null() {
-            loop {
-                let filename: *mut Object = msg_send![enumerator, nextObject];
-                if filename.is_null() {
-                    break;
+    // Use std fs to enumerate only depth-1 (direct children only)
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                // Skip directories
+                if metadata.is_dir() {
+                    continue;
                 }
 
-                let c_str: *const i8 = msg_send![filename, UTF8String];
-                let filename_str = std::ffi::CStr::from_ptr(c_str).to_string_lossy();
-
-                let full_path = format!("{}/{}", path, filename_str);
-                let p = Path::new(&full_path);
-
-                if let Some(ext) = p.extension() {
+                let path_buf = entry.path();
+                if let Some(ext) = path_buf.extension() {
                     if let Some(ext_str) = ext.to_str() {
                         if image_extensions.contains(&ext_str.to_lowercase().as_str()) {
-                            images.push(p.to_path_buf());
+                            images.push(path_buf);
                         }
                     }
                 }
