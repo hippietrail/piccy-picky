@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 use rand::seq::SliceRandom;
 use std::env;
 use std::io::{self, Write, Cursor};
