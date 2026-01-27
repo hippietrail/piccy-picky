@@ -32,7 +32,7 @@ impl ScalingMode {
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: piccy-picky [OPTIONS] <path>");
+        eprintln!("Usage: piccy-picky [OPTIONS] <path> [path2] ...");
         eprintln!("Options:");
         eprintln!("  -d, --depth <N>      Search depth (default: 1)");
         eprintln!("  --test-search        Test file search only (print results and exit)");
@@ -40,7 +40,7 @@ fn main() {
     }
 
     // Parse CLI args
-    let mut target_path = String::new();
+    let mut target_paths = Vec::new();
     let mut depth = 1usize;
     let mut test_search = false;
     let mut i = 1;
@@ -57,7 +57,7 @@ fn main() {
                 test_search = true;
             }
             arg if !arg.starts_with('-') => {
-                target_path = arg.to_string();
+                target_paths.push(arg.to_string());
             }
             _ => {
                 eprintln!("Unknown option: {}", args[i]);
@@ -67,61 +67,71 @@ fn main() {
         i += 1;
     }
     
-    if target_path.is_empty() {
-        eprintln!("Error: path required");
+    if target_paths.is_empty() {
+        eprintln!("Error: at least one path required");
         std::process::exit(1);
     }
     
     // If test mode, just search and print results
     if test_search {
-        let images = macos::find_images(&target_path, depth);
-        println!("Found {} image files:", images.len());
-        for (idx, img) in images.iter().take(10).enumerate() {
+        let mut all_images = Vec::new();
+        for path in &target_paths {
+            let images = macos::find_images(path, depth);
+            all_images.extend(images);
+        }
+        println!("Found {} image files:", all_images.len());
+        for (idx, img) in all_images.iter().take(10).enumerate() {
             println!("  {}. {}", idx + 1, img.display());
         }
-        if images.len() > 10 {
-            println!("  ... and {} more", images.len() - 10);
+        if all_images.len() > 10 {
+            println!("  ... and {} more", all_images.len() - 10);
         }
         std::process::exit(0);
     }
     
-    // Try to access the path; if it fails, show permission instructions
-    if !Path::new(&target_path).exists() {
-        eprintln!("Path does not exist: {}", target_path);
-        std::process::exit(1);
-    }
-    
-    if std::fs::read_dir(&target_path).is_err() {
-        eprintln!("\n❌ No permission to access: {}", target_path);
-        eprintln!("\n📋 To fix this on macOS:");
-        eprintln!("   1. System Settings > Privacy & Security > Files and Folders");
-        eprintln!("   2. Find iTerm2 and grant it access to this folder");
-        eprintln!("\n   Also add iTerm2 to Full Disk Access:");
-        eprintln!("   System Settings > Privacy & Security > Full Disk Access");
-        std::process::exit(1);
-    }
+    // Verify all paths exist and are accessible
+    for target_path in &target_paths {
+        if !Path::new(target_path).exists() {
+            eprintln!("Path does not exist: {}", target_path);
+            std::process::exit(1);
+        }
+        
+        if std::fs::read_dir(target_path).is_err() {
+            eprintln!("\n❌ No permission to access: {}", target_path);
+            eprintln!("\n📋 To fix this on macOS:");
+            eprintln!("   1. System Settings > Privacy & Security > Files and Folders");
+            eprintln!("   2. Find iTerm2 and grant it access to this folder");
+            eprintln!("\n   Also add iTerm2 to Full Disk Access:");
+            eprintln!("   System Settings > Privacy & Security > Full Disk Access");
+            std::process::exit(1);
+        }
+        }
 
-    // Enable raw mode for interactive input
-    let original_termios = term::enable_raw_mode()
+        // Enable raw mode for interactive input
+        let original_termios = term::enable_raw_mode()
         .expect("Failed to enable raw mode");
-    
-    // Ensure we restore on exit
-    let _restore = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        
+        // Ensure we restore on exit
+        let _restore = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // Deferred cleanup via drop
-    }));
+        }));
 
-    let mut scaling_mode = ScalingMode::Uniform;
-    let mut chosen: Option<Vec<PathBuf>> = None;
+        let mut scaling_mode = ScalingMode::Uniform;
+        let mut chosen: Option<Vec<PathBuf>> = None;
 
-    loop {
+        loop {
         // Get terminal size
         let (cols, rows) = term::get_terminal_size();
         let (px_width, px_height) = term::get_terminal_pixel_size();
 
-        // Walk path and find images (only if not already chosen)
-        let images = macos::find_images(&target_path, depth);
+        // Collect images from all paths (only if not already chosen)
+        let mut images = Vec::new();
+        for path in &target_paths {
+            let path_images = macos::find_images(path, depth);
+            images.extend(path_images);
+        }
         if images.is_empty() {
-            println!("No images found in {}", target_path);
+            println!("No images found in paths: {}", target_paths.join(", "));
             break;
         }
 
@@ -156,7 +166,7 @@ fn main() {
                     total_height_rows += h;
                 }
                 Err(e) => {
-                    let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
+                    let abbrev = term::abbreviate_path(path, "", cols as usize);
                     eprintln!("Failed to calc height {}: {}", abbrev, e);
                     total_height_rows = u32::MAX;
                 }
@@ -187,12 +197,12 @@ fn main() {
         for path in chosen_ref {
             match load_and_display_image(path, scale_factor) {
                 Ok(info) => {
-                    let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
+                    let abbrev = term::abbreviate_path(path, "", cols as usize);
                     println!("{}", abbrev);
                     displayed.push((path.clone(), info));
                 }
                 Err(e) => {
-                    let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
+                    let abbrev = term::abbreviate_path(path, "", cols as usize);
                     eprintln!("Failed to load {}: {}", abbrev, e);
                 }
             }
@@ -215,7 +225,7 @@ fn main() {
                 break;
             }
             let (path, info) = &displayed[idx];
-            let abbrev = term::abbreviate_path(path, &target_path, cols as usize - 20);
+            let abbrev = term::abbreviate_path(path, "", cols as usize - 20);
             
             loop {
                 // Build display line with all 3 slots
@@ -250,7 +260,7 @@ fn main() {
                             let (path, _) = &displayed[i];
                             match load_and_display_image(path, scale_factor) {
                                 Ok(_) => {
-                                    let abbrev = term::abbreviate_path(path, &target_path, cols as usize);
+                                    let abbrev = term::abbreviate_path(path, "", cols as usize);
                                     println!("{}", abbrev);
                                 }
                                 Err(_) => {} // Silently skip redraw errors

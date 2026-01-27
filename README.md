@@ -2,20 +2,29 @@
 
 ## Overview
 
-Piccy Picky is a full macOS CLI image viewer built in Rust. It provides an ANSI text-based UI for inline image display in iTerm2, allowing users to view images directly in the terminal. The application uses `NSFileManager` for correct Bin/Trash operations.
+Piccy Picky is a macOS CLI image triage tool built in Rust. View images from multiple directories in your terminal and quickly decide which to keep or send to trash. Inline display in iTerm2 with interactive k/b/i decisions.
 
 ## Features
 
-- **Image Viewing**: View images directly in the terminal with inline display.
-- **File Management**: Utilizes `NSFileManager` for Bin/Trash operations.
-- **Directory Navigation**: Supports recursive directory walking with the `-d/--depth` flag.
-- **Mode Toggling**: Toggle display modes using the 'm' key.
-- **Debug Information**: Access hidden debug info by pressing the 'i' key.
-- **Screen Clearing**: Clear the screen at any time with Ctrl+L.
+- **Firmlink-Aware Traversal**: Uses macOS `FileManager.DirectoryEnumerator` to properly handle firmlinks (invisible directory aliases) without duplicate scans
+- **Depth-Limited Search**: Recursively search directories up to a specified depth with `-d/--depth` (default: 1)
+- **Multi-Directory Support**: Search and triage images from multiple paths in a single session
+- **Interactive Workflow**: Quick keys for decisions:
+  - **k** - Keep image
+  - **b** - Send to Bin/Trash (uses native macOS `trashItemAtURL:` for safe deletion)
+  - **i** - Show debug info (terminal size, image metrics, scaling factors)
+- **Scaling Modes**: Two display modes (toggle with **m**):
+  - **Uniform** (📏) - All images scaled equally to fit
+  - **Equal Budget** (🎯) - Each image gets equal row allocation
+- **Screen Management**:
+  - **Ctrl+L** - Clear screen and redraw undecided images
+  - **c** - Continue (pick new batch of 3 images)
+  - **r** - Restart (redisplay current 3 images)
+  - **q** - Quit
+- **System-Aware**: Automatically skips `.Trash`, `.Volumes`, `.TemporaryItems`, `.DS_Store`
+- **Test Mode**: `--test-search` flag to preview found images without interactive UI
 
 ## Installation
-
-To install Piccy Picky, clone the repository and build the project using Cargo:
 
 ```bash
 git clone https://github.com/hippietrail/piccy-picky.git
@@ -25,11 +34,22 @@ cargo build --release
 
 ## Usage
 
-Run the application from the terminal:
-
 ```bash
-./target/release/piccy-picky [options]
+# Single directory
+./target/release/piccy-picky ~/Pictures
+
+# Multiple directories with depth limit
+./target/release/piccy-picky -d 2 ~/Pictures ~/Desktop ~/.downloads
+
+# Test search (preview images, no UI)
+./target/release/piccy-picky --test-search ~/Pictures -d 2
 ```
+
+### Options
+
+- `-d, --depth <N>` - Search depth (default: 1). Use 0 for single level only.
+- `--test-search` - Test image discovery and exit (shows first 10 matches)
+- Multiple paths supported - triage images from multiple directories
 
 ## Contributing
 
