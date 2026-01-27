@@ -144,3 +144,14 @@ pub fn move_to_trash(path: &Path) -> bool {
         success
     }
 }
+
+/// Launch QuickLook preview for a file
+pub fn quicklook_preview(path: &Path) {
+    use std::process::Command;
+    
+    if let Some(path_str) = path.to_str() {
+        let _ = Command::new("/usr/bin/qlmanage")
+            .args(&["-p", path_str])
+            .spawn();
+    }
+}

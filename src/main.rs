@@ -235,13 +235,13 @@ fn main() {
                 for i in 0..displayed.len() {
                     if i == idx {
                         // Current: bold
-                        line.push_str(&format!("\x1b[1m[k/b/i]\x1b[0m "));
+                        line.push_str(&format!("\x1b[1m[k/b]\x1b[0m "));
                     } else if i < idx {
                         // Done: show what was chosen
-                        line.push_str(&format!("[{}]     ", decisions[i]));
+                        line.push_str(&format!("[{}]   ", decisions[i]));
                     } else {
                         // Upcoming: dim
-                        line.push_str("\x1b[2m[k/b/i]\x1b[0m ");
+                        line.push_str("\x1b[2m[k/b]\x1b[0m ");
                     }
                 }
                 line.push_str(&format!("  {}", abbrev));
@@ -297,8 +297,18 @@ fn main() {
                                 io::stdout().flush().unwrap();
                             }
                         }
+                        Some(' ') | Some('l') => {
+                            // Open QuickLook preview (hidden, no prompt)
+                            macos::quicklook_preview(path);
+                            continue;
+                        }
+                        Some('q') => {
+                            // Quit (hidden)
+                            term::disable_raw_mode(&original_termios).ok();
+                            std::process::exit(0);
+                        }
                         Some('i') => {
-                            // Print debug info
+                            // Print debug info (hidden, not in prompt)
                             println!("\n\n📊 Image Info:");
                             println!("  Terminal:           {} cols × {} rows", cols, rows);
                             println!("  Terminal pixels:    {} × {} px", px_width, px_height);
