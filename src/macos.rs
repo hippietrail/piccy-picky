@@ -82,12 +82,29 @@ pub fn find_images(path: &str, max_depth: usize) -> Vec<PathBuf> {
             let path_str_obj: *mut Object = msg_send![current_url, path];
             let c_str: *const i8 = msg_send![path_str_obj, UTF8String];
             let path_str = std::ffi::CStr::from_ptr(c_str).to_string_lossy();
+            let path_buf = Path::new(path_str.as_ref());
+            
+            // Skip system/trash directories
+            let skip_dirs = [".Trash", ".Volumes", ".TemporaryItems", ".DS_Store"];
+            let mut skip = false;
+            for component in path_buf.components() {
+                if let Some(name) = component.as_os_str().to_str() {
+                    if skip_dirs.contains(&name) {
+                        skip = true;
+                        break;
+                    }
+                }
+            }
+            if skip {
+                let _: () = msg_send![enumerator, skipDescendants];
+                continue;
+            }
             
             // Check if file has image extension
-            if let Some(ext) = Path::new(path_str.as_ref()).extension() {
+            if let Some(ext) = path_buf.extension() {
                 if let Some(ext_str) = ext.to_str() {
                     if image_extensions.contains(&ext_str.to_lowercase().as_str()) {
-                        images.push(PathBuf::from(path_str.to_string()));
+                        images.push(path_buf.to_path_buf());
                     }
                 }
             }
