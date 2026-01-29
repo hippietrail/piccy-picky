@@ -147,11 +147,13 @@ pub fn move_to_trash(path: &Path) -> bool {
 
 /// Launch QuickLook preview for a file
 pub fn quicklook_preview(path: &Path) {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     
     if let Some(path_str) = path.to_str() {
         let _ = Command::new("/usr/bin/qlmanage")
             .args(&["-p", path_str])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn();
     }
 }

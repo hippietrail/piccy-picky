@@ -121,12 +121,7 @@ fn main() {
         let mut scaling_mode = ScalingMode::Uniform;
         let mut chosen: Option<Vec<PathBuf>> = None;
 
-        loop {
-        // Get terminal size
-        let (cols, rows) = term::get_terminal_size();
-        let (px_width, px_height) = term::get_terminal_pixel_size();
-
-        // Collect images from all paths (only if not already chosen)
+        // Scan all images once at the start
         let mut images = Vec::new();
         for path in &target_paths {
             let path_images = macos::find_images(path, depth);
@@ -134,6 +129,17 @@ fn main() {
         }
         if images.is_empty() {
             println!("No images found in paths: {}", target_paths.join(", "));
+            std::process::exit(0);
+        }
+
+        loop {
+        // Get terminal size
+        let (cols, rows) = term::get_terminal_size();
+        let (px_width, px_height) = term::get_terminal_pixel_size();
+
+        // Check if we've run out of images
+        if images.is_empty() {
+            println!("\n✨ All images reviewed! No more to pick from.");
             break;
         }
 
@@ -246,7 +252,7 @@ fn main() {
                 }
                 line.push_str(&format!("  {}", abbrev));
                 
-                print!("{}\r", line); // \r = carriage return (overwrite current line)
+                print!("\r\x1b[K{}", line); // \r = carriage return, \x1b[K = clear to end of line
                 io::stdout().flush().unwrap();
 
                 // Read single keypress
@@ -284,13 +290,15 @@ fn main() {
                         }
                         Some('k') => {
                             decisions.push('k');
-                            println!(); // Move to next line after decision
+                            // Remove from collection
+                            images.retain(|p| p != path);
                             break;
                         }
                         Some('b') => {
                             if macos::move_to_trash(path) {
                                 decisions.push('b');
-                                println!(); // Move to next line after decision
+                                // Remove from collection
+                                images.retain(|p| p != path);
                                 break;
                             } else {
                                 print!("\x07"); // Bell on failure
@@ -343,8 +351,8 @@ fn main() {
             continue; // Jump back to top of main loop (recalc and reload with new mode)
         }
 
-        // Ask to continue, restart, or quit
-        print!("\n[c]ontinue, [r]estart, [q]uit: ");
+        // All decisions made, move to next line and ask to continue
+        println!("\n[c]ontinue, [r]estart, [q]uit: ");
         io::stdout().flush().unwrap();
         
         loop {
