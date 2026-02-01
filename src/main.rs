@@ -9,27 +9,11 @@ use image::GenericImageView;
 mod macos;
 mod term;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ScalingMode {
-    Uniform,      // All 3 scaled equally to fit
-    EqualBudget,  // Each gets equal row allocation
-}
-
-impl ScalingMode {
-    fn indicator(&self) -> &'static str {
-        match self {
-            ScalingMode::Uniform => "📏",
-            ScalingMode::EqualBudget => "🎯",
-        }
-    }
-    
-    fn toggle(&self) -> Self {
-        match self {
-            ScalingMode::Uniform => ScalingMode::EqualBudget,
-            ScalingMode::EqualBudget => ScalingMode::Uniform,
-        }
-    }
-}
+// TODO: Remove ScalingMode entirely - we only need one algorithm:
+// 1. Fit each image to available width (in pixels)
+// 2. If all 3 heights exceed available height, scale all down uniformly
+// The "modes" (Uniform vs EqualBudget) both end up doing the same thing
+// and the calculated scale_factor was never applied anyway (see BUG below)
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -118,7 +102,6 @@ fn main() {
         // Deferred cleanup via drop
         }));
 
-        let mut scaling_mode = ScalingMode::Uniform;
         let mut chosen: Option<Vec<PathBuf>> = None;
 
         // Scan all images once at the start
@@ -133,9 +116,11 @@ fn main() {
         }
 
         loop {
-        // Get terminal size
-        let (cols, rows) = term::get_terminal_size();
-        let (px_width, px_height) = term::get_terminal_pixel_size();
+        // Get terminal dimensions
+        // CRITICAL: These are our single source of truth for layout calculations.
+        // We work primarily in pixels for precision, then convert to character dimensions only for iTerm2.
+        let (cols, rows) = term::get_terminal_size();           // Character grid dimensions
+        let (px_width, px_height) = term::get_terminal_pixel_size(); // Pixel dimensions of terminal
 
         // Check if we've run out of images
         if images.is_empty() {
@@ -143,7 +128,7 @@ fn main() {
             break;
         }
 
-        // Pick 3 new images, or reuse if mode was toggled
+        // Pick 3 new images
         if chosen.is_none() {
             let mut rng = rand::thread_rng();
             let batch_size = 3.min(images.len());
@@ -155,55 +140,70 @@ fn main() {
             );
         }
         
-        let batch_size = chosen.as_ref().map(|c| c.len()).unwrap_or(0);
         let chosen_ref = chosen.as_ref().unwrap();
-
-        // Calculate scaling based on mode
-        let display_width_chars = 35u32;
-        let pixels_per_row = px_height.max(1) / rows.max(1) as u32;
+        
+        // ===== SCALING ALGORITHM =====
+        // Goal: Fit 3 images in available space without double-scaling
+        //
+        // Step 1: Calculate available space in PIXELS (not characters)
+        //   - UI needs ~5 rows = 5 * (px_height/rows)
+        //   - Available height in pixels = px_height - ui_rows_px
+        //   - Available width in pixels = responsive to terminal width, not hardcoded to 35 chars
+        //
+        // Step 2: For each image, calculate scaled dimensions
+        //   - We calculate what pixel width it should be: responsive to terminal width
+        //   - Use aspect ratio to get corresponding height in pixels
+        //   - NO pre-scaling of images during encoding (except for massive images >4000px)
+        //
+        // Step 3: Check if 3 scaled images fit vertically
+        //   - Sum pixel heights of 3 images + padding
+        //   - If over budget: calculate uniform scale-down factor (applies to all 3 equally)
+        //
+        // Step 4: Pass final pixel dimensions to load_and_display_image()
+        //   - Only apply scale during encoding if needed for size
+        //   - Let iTerm2 do the final scaling via width parameter
+        //
+        // KEY: Never scale twice. Our calculations tell iTerm2 exactly what to display.
+        
+        // Available space in PIXELS
+        let ui_rows = 5u32;
+        let ui_height_px = ui_rows * (px_height / rows.max(1) as u32);
+        let available_height_px = px_height.saturating_sub(ui_height_px);
+        
+        // Available width: responsive to terminal, with margin for safety
+        // TODO: Consider making this configurable or based on image count
+        let width_margin_cols = 2u32;
+        let available_width_cols = cols.saturating_sub(width_margin_cols as u16) as u32;
+        let available_width_px = available_width_cols * (px_width / cols.max(1) as u32);
+        
+        // Use the full available width for display, not hardcoded 35 chars
+        let display_width_chars = available_width_cols;
+        let pixels_per_char_h = px_height.max(1) / rows.max(1) as u32;
+        let pixels_per_char_w = px_width.max(1) / cols.max(1) as u32;
         let available_rows = rows.saturating_sub(5) as u32; // 5 rows reserved
         
-        let mut heights: Vec<u32> = Vec::new();
-        let mut total_height_rows = 0u32;
         let mut scale_factor = 1.0f32;
         
         for path in chosen_ref {
-            match calc_image_height_rows(path, display_width_chars, pixels_per_row) {
+            match calc_image_height_rows(path, display_width_chars, pixels_per_char_w, pixels_per_char_h) {
                 Ok(h) => {
-                    heights.push(h);
-                    total_height_rows += h;
+                    // TODO: Use this to check vertical fit and calculate uniform scale-down if needed
+                    if h as u32 > available_rows {
+                        let ratio = available_rows as f32 / h as f32;
+                        scale_factor = scale_factor.min(ratio);
+                    }
                 }
                 Err(e) => {
                     let abbrev = term::abbreviate_path(path, "", cols as usize);
                     eprintln!("Failed to calc height {}: {}", abbrev, e);
-                    total_height_rows = u32::MAX;
-                }
-            }
-        }
-
-        // Adjust scale factor based on mode
-        let padding_rows = (batch_size.saturating_sub(1)) as u32;
-        let total_needed = total_height_rows + padding_rows;
-        
-        match scaling_mode {
-            ScalingMode::Uniform => {
-                if total_needed > available_rows {
-                    scale_factor = available_rows as f32 / total_needed as f32;
-                }
-            }
-            ScalingMode::EqualBudget => {
-                let per_image_rows = available_rows / batch_size as u32;
-                let max_img_rows = *heights.iter().max().unwrap_or(&1);
-                if max_img_rows > per_image_rows {
-                    scale_factor = per_image_rows as f32 / max_img_rows as f32;
                 }
             }
         }
 
         // Load and display images (iTerm2 will auto-scale via width parameter)
-        let mut displayed: Vec<(PathBuf, ImageInfo)> = Vec::new();
-        for path in chosen_ref {
-            match load_and_display_image(path, scale_factor) {
+         let mut displayed: Vec<(PathBuf, ImageInfo)> = Vec::new();
+         for path in chosen_ref {
+             match load_and_display_image(path, scale_factor, display_width_chars) {
                 Ok(info) => {
                     let abbrev = term::abbreviate_path(path, "", cols as usize);
                     println!("{}", abbrev);
@@ -221,17 +221,13 @@ fn main() {
             break;
         }
 
-        // Show count before prompts with mode indicator
-        println!("\n📸 Picked {} images out of {} {}", batch_size, images.len(), scaling_mode.indicator());
+        // Show count before prompts
+        println!("\n📸 Picked {} images out of {}", chosen_ref.len(), images.len());
 
         // Interactive interface: show [k/b/i] [k/b/i] [k/b/i] with ANSI highlighting
-        let mut decisions = Vec::new();
-        let mut mode_toggled = false;
+         let mut decisions = Vec::new();
         
         for idx in 0..displayed.len() {
-            if mode_toggled {
-                break;
-            }
             let (path, info) = &displayed[idx];
             let abbrev = term::abbreviate_path(path, "", cols as usize - 20);
             
@@ -266,7 +262,7 @@ fn main() {
                         // Redraw images not yet decided (idx..displayed.len())
                         for i in idx..displayed.len() {
                             let (path, _) = &displayed[i];
-                            match load_and_display_image(path, scale_factor) {
+                            match load_and_display_image(path, scale_factor, display_width_chars) {
                                 Ok(_) => {
                                     let abbrev = term::abbreviate_path(path, "", cols as usize);
                                     println!("{}", abbrev);
@@ -276,57 +272,34 @@ fn main() {
                         }
                         
                         // Redraw image count and continue with current prompt
-                        println!("\n📸 Picked {} images out of {} {}", batch_size, images.len(), scaling_mode.indicator());
+                        println!("\n📸 Picked {} images out of {}", displayed.len(), images.len());
                         continue; // Skip to next iteration of inner prompt loop
                     }
                     
-                    match c.to_lowercase().next() {
-                        Some('m') => {
-                            // Toggle scaling mode and restart this batch
-                            scaling_mode = scaling_mode.toggle();
-                            println!("\x1b[2J\x1b[H"); // Clear screen
-                            mode_toggled = true;
-                            break; // Exit inner loop
-                        }
-                        Some('k') => {
-                            decisions.push('k');
-                            // Remove from collection
-                            images.retain(|p| p != path);
-                            break;
-                        }
-                        Some('b') => {
-                            if macos::move_to_trash(path) {
-                                decisions.push('b');
-                                // Remove from collection
-                                images.retain(|p| p != path);
-                                break;
-                            } else {
-                                print!("\x07"); // Bell on failure
-                                io::stdout().flush().unwrap();
-                            }
-                        }
-                        Some(' ') | Some('l') => {
-                            // Open QuickLook preview (hidden, no prompt)
-                            macos::quicklook_preview(path);
+                    // Check original char BEFORE lowercasing so we can distinguish 'i' vs 'I'
+                    match c {
+                        'I' => {
+                            // Capital [I]: show comprehensive info for all 3 images + calculations
+                            display_full_scaling_info(&displayed, cols, rows, px_width, px_height, 
+                                                     scale_factor, available_height_px, available_width_px);
+                            // Wait for keypress
+                            let _ = term::read_single_char();
+                            println!("\n");
                             continue;
                         }
-                        Some('q') => {
-                            // Quit (hidden)
-                            term::disable_raw_mode(&original_termios).ok();
-                            std::process::exit(0);
-                        }
-                        Some('i') => {
-                            // Print debug info (hidden, not in prompt)
-                            println!("\n\n📊 Image Info:");
+                        'i' => {
+                            // Lowercase [i]: show info for current image only
+                            println!("\n\n📊 Image Info (current):");
                             println!("  Terminal:           {} cols × {} rows", cols, rows);
                             println!("  Terminal pixels:    {} × {} px", px_width, px_height);
-                            let px_per_char = px_height / rows as u32;
-                            println!("  Font size:          {} × {} px/char", 8, px_per_char);
+                            let px_per_char_h = px_height / rows as u32;
+                            let px_per_char_w = px_width / cols as u32;
+                            println!("  Pixel per char:     {} × {} px/char", px_per_char_w, px_per_char_h);
                             println!("  Original image:     {} × {} px", info.orig_w, info.orig_h);
                             println!("  Scaling factor:     {:.2}", info.scale_factor);
                             println!("  Scaled image:       {} × {} px", info.scaled_w, info.scaled_h);
                             println!("  Display in term:    35 chars × ~{} chars", 
-                                     (info.scaled_h + px_per_char - 1) / px_per_char);
+                                     (info.scaled_h + px_per_char_h - 1) / px_per_char_h);
                             println!("  (press any key to continue)");
                             io::stdout().flush().unwrap();
                             
@@ -336,19 +309,46 @@ fn main() {
                             continue;
                         }
                         _ => {
-                            print!("\x07"); // Bell on invalid input
-                            io::stdout().flush().unwrap();
+                            // Lowercase other keys for case-insensitive matching
+                            match c.to_lowercase().next() {
+                                Some('k') => {
+                                    decisions.push('k');
+                                    // Remove from collection
+                                    images.retain(|p| p != path);
+                                    break;
+                                }
+                                Some('b') => {
+                                    if macos::move_to_trash(path) {
+                                        decisions.push('b');
+                                        // Remove from collection
+                                        images.retain(|p| p != path);
+                                        break;
+                                    } else {
+                                        print!("\x07"); // Bell on failure
+                                        io::stdout().flush().unwrap();
+                                    }
+                                }
+                                Some(' ') | Some('l') => {
+                                    // Open QuickLook preview (hidden, no prompt)
+                                    macos::quicklook_preview(path);
+                                    continue;
+                                }
+                                Some('q') => {
+                                    // Quit (hidden)
+                                    term::disable_raw_mode(&original_termios).ok();
+                                    std::process::exit(0);
+                                }
+                                _ => {
+                                    print!("\x07"); // Bell on invalid input
+                                    io::stdout().flush().unwrap();
+                                }
+                            }
                         }
                     }
                 } else {
                     break;
                 }
             }
-        }
-
-        // If mode was toggled, restart with same images and new scale factor
-        if mode_toggled {
-            continue; // Jump back to top of main loop (recalc and reload with new mode)
         }
 
         // All decisions made, move to next line and ask to continue
@@ -391,21 +391,21 @@ fn main() {
 
 
 /// Pre-calculate image display height in character rows
-pub fn calc_image_height_rows(path: &Path, display_width_chars: u32, pixels_per_char: u32) -> Result<u32, String> {
+pub fn calc_image_height_rows(path: &Path, display_width_chars: u32, pixels_per_char_w: u32, pixels_per_char_h: u32) -> Result<u32, String> {
     let img = image::open(path)
         .map_err(|e| e.to_string())?;
 
     let (w, h) = img.dimensions();
     let aspect_ratio = h as f32 / w as f32;
 
-    // Display width in pixels (35 chars * 8 pixels/char ≈ 280px)
-    let display_width_px = display_width_chars * pixels_per_char;
+    // Display width in pixels (35 chars * pixels_per_char_w)
+    let display_width_px = display_width_chars * pixels_per_char_w;
 
     // Calculate height in pixels using aspect ratio
     let height_px = (display_width_px as f32 * aspect_ratio) as u32;
 
     // Round UP to nearest character row
-    let height_rows = (height_px + pixels_per_char - 1) / pixels_per_char;
+    let height_rows = (height_px + pixels_per_char_h - 1) / pixels_per_char_h;
 
     Ok(height_rows)
 }
@@ -418,23 +418,130 @@ pub struct ImageInfo {
     pub scale_factor: f32,
 }
 
-fn load_and_display_image(path: &Path, layout_scale: f32) -> Result<ImageInfo, String> {
+/// Display comprehensive scaling info for all 3 images + calculations
+/// Shows original sizes, available space, scale factors, and final display dimensions
+fn display_full_scaling_info(
+    displayed: &[(PathBuf, ImageInfo)],
+    cols: u16,
+    rows: u16,
+    px_width: u32,
+    px_height: u32,
+    scale_factor: f32,
+    available_height_px: u32,
+    available_width_px: u32,
+) {
+    println!("\n\n╔════════════════════════════════════════════════════════════════════╗");
+    println!("║                    COMPREHENSIVE SCALING INFO [I]                    ║");
+    println!("╚════════════════════════════════════════════════════════════════════╝");
+    
+    // Terminal info
+    println!("\n📱 TERMINAL:");
+    println!("  Character grid:     {} cols × {} rows", cols, rows);
+    println!("  Pixel dimensions:   {} × {} px", px_width, px_height);
+    let px_per_char_w = px_width / cols.max(1) as u32;
+    let px_per_char_h = px_height / rows.max(1) as u32;
+    println!("  Pixels per char:    {} × {} px/char (w × h)", px_per_char_w, px_per_char_h);
+    
+    // Available space
+    println!("\n📏 AVAILABLE SPACE:");
+    let ui_rows = 5u32;
+    let ui_height_px = ui_rows * px_per_char_h;
+    println!("  UI height:          {} rows = {} px", ui_rows, ui_height_px);
+    println!("  Available height:   {} px ({} rows)", available_height_px, 
+             available_height_px / px_per_char_h.max(1));
+    let width_margin_cols = 2u32;
+    let available_width_cols = (cols as u32).saturating_sub(width_margin_cols);
+    println!("  Available width:    {} px ({} cols, margin {})", 
+             available_width_px, available_width_cols, width_margin_cols);
+    
+    // Per-image breakdown
+    println!("\n🖼️  IMAGES (3 shown):");
+    println!("  Global scale factor: {:.3}", scale_factor);
+    
+    for (idx, (path, info)) in displayed.iter().enumerate() {
+        let abbrev = term::abbreviate_path(path, "", 50);
+        println!("\n  Image {}:", idx + 1);
+        println!("    File:             {}", abbrev);
+        println!("    Original:         {} × {} px", info.orig_w, info.orig_h);
+        println!("    Original aspect:  {:.3}:1", info.orig_h as f32 / info.orig_w as f32);
+        println!("    After scaling:    {} × {} px", info.scaled_w, info.scaled_h);
+        println!("    Scaling applied:  {:.3}× (multiply original by this)", info.scale_factor);
+        
+        // Calculate what this image would be at the available width
+        let theoretical_w = available_width_px;
+        let theoretical_h = (theoretical_w as f32 * info.orig_h as f32 / info.orig_w as f32) as u32;
+        println!("    If scaled to available width: {} × {} px", theoretical_w, theoretical_h);
+        
+        // Display dimensions in character grid
+        let display_rows = (info.scaled_h + px_per_char_h - 1) / px_per_char_h;
+        println!("    Display rows:     ~{} chars tall", display_rows);
+    }
+    
+    // Summary validation
+    println!("\n✅ VALIDATION:");
+    let total_img_height_px: u32 = displayed.iter().map(|(_, info)| info.scaled_h).sum();
+    let padding_px = (displayed.len().saturating_sub(1)) as u32 * px_per_char_h;
+    let total_needed_px = total_img_height_px + padding_px;
+    
+    println!("  Total image heights: {} px", total_img_height_px);
+    println!("  Padding (between):   {} px ({} rows)", padding_px, 
+             (padding_px + px_per_char_h - 1) / px_per_char_h);
+    println!("  Total needed:        {} px", total_needed_px);
+    println!("  Available:           {} px", available_height_px);
+    
+    if total_needed_px <= available_height_px {
+        println!("  ✓ FITS with {} px to spare ({:.1}% utilized)", 
+                 available_height_px - total_needed_px,
+                 (total_needed_px as f32 / available_height_px as f32) * 100.0);
+    } else {
+        let overage = total_needed_px - available_height_px;
+        println!("  ✗ OVERFLOW by {} px ({:.1}% over budget)", 
+                 overage,
+                 (overage as f32 / available_height_px as f32) * 100.0);
+    }
+    
+    println!("\n  (press any key to continue)");
+    io::stdout().flush().unwrap();
+}
+
+fn load_and_display_image(path: &Path, layout_scale: f32, display_width_chars: u32) -> Result<ImageInfo, String> {
+    // CRITICAL: Never scale twice. We use layout_scale to calculate the display width for iTerm2,
+    // but we do NOT resize the image itself (except for huge images >4000px).
+    // iTerm2 will handle all scaling when it receives the width parameter.
+    //
+    // TODO: Current implementation still scales image down (wrong!)
+    // Should instead:
+    // 1. Load image at original size (or reduced if >4000px for file size)
+    // 2. Calculate display_width_px = display_width_chars * px_per_char_w * layout_scale
+    // 3. Pass display_width_chars to iTerm2, which scales based on that width
+    // 4. Never apply layout_scale to the image dimensions
+    
     let img = image::open(path)
         .map_err(|e| e.to_string())?;
 
-    // Scale with layout_scale, but also don't exceed max dimension
     let (w, h) = img.dimensions();
-    let max_dim = 2000u32;
-    let scale = if w > max_dim || h > max_dim {
-        (max_dim as f32 / w.max(h) as f32).min(1.0)
+    
+    // Step 1: Apply layout scaling if needed (to fit 3 images in available space)
+    // This is the UNIFORM scale-down we calculated after checking all 3 images
+    let after_layout_w = (w as f32 * layout_scale) as u32;
+    let after_layout_h = (h as f32 * layout_scale) as u32;
+    
+    // Step 2: If image is still massive, apply encode_scale to reduce file size
+    // This is a secondary pass only for truly huge images, not for layout
+    let max_dim = 4000u32;
+    let encode_scale = if after_layout_w > max_dim || after_layout_h > max_dim {
+        (max_dim as f32 / after_layout_w.max(after_layout_h) as f32).min(1.0)
     } else {
         1.0
-    } * layout_scale;
+    };
 
-    let scaled_w = (w as f32 * scale) as u32;
-    let scaled_h = (h as f32 * scale) as u32;
+    let final_w = (after_layout_w as f32 * encode_scale) as u32;
+    let final_h = (after_layout_h as f32 * encode_scale) as u32;
 
-    let img_to_encode = if scale < 1.0 {
+    let img_to_encode = if layout_scale < 1.0 || encode_scale < 1.0 {
+        let scale = layout_scale * encode_scale;
+        let scaled_w = (w as f32 * scale) as u32;
+        let scaled_h = (h as f32 * scale) as u32;
         img.resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Lanczos3)
     } else {
         img
@@ -449,14 +556,17 @@ fn load_and_display_image(path: &Path, layout_scale: f32) -> Result<ImageInfo, S
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&png_data);
     let size = encoded.len();
-    // Display at ~35 character width (lets iTerm2 auto-scale height preserving aspect ratio)
-    println!("\x1b]1337;File=name=image.png;size={};inline=1;width=35c;base64:{}\x07", size, encoded);
+    
+    // Pass the display_width to iTerm2 - this tells it how wide to make the image
+    // iTerm2 will scale the image to fit this width and maintain aspect ratio
+    println!("\x1b]1337;File=name=image.png;size={};inline=1;width={}c;base64:{}\x07", 
+             size, display_width_chars, encoded);
 
     Ok(ImageInfo {
         orig_w: w,
         orig_h: h,
-        scaled_w,
-        scaled_h,
-        scale_factor: scale,
+        scaled_w: final_w,
+        scaled_h: final_h,
+        scale_factor: layout_scale * encode_scale,
     })
 }

@@ -13,31 +13,31 @@ struct WinSize {
 pub fn get_terminal_size() -> (u16, u16) {
     unsafe {
         if isatty(STDOUT_FILENO) == 0 {
-            return (80, 24); // Fallback
+            eprintln!("Error: stdout is not a TTY");
+            std::process::exit(1);
         }
 
         let mut ws: WinSize = std::mem::zeroed();
         let ret = ioctl(STDOUT_FILENO, TIOCGWINSZ as u64, &mut ws as *mut WinSize);
 
         if ret == -1 {
-            (80, 24) // Fallback
-        } else {
-            (ws.ws_col, ws.ws_row)
+            eprintln!("Error: failed to get terminal size via ioctl");
+            std::process::exit(1);
         }
+        (ws.ws_col, ws.ws_row)
     }
 }
 
-/// Get pixel dimensions of terminal. Some terminals report this via TIOCGWINSZ.
+/// Get pixel dimensions of terminal via TIOCGWINSZ (iTerm2 reports this).
 pub fn get_terminal_pixel_size() -> (u32, u32) {
     unsafe {
         let mut ws: WinSize = std::mem::zeroed();
         let ret = ioctl(STDOUT_FILENO, TIOCGWINSZ as u64, &mut ws as *mut WinSize);
 
         if ret == -1 || ws.ws_xpixel == 0 || ws.ws_ypixel == 0 {
-            // Fallback: assume standard macOS Terminal font metrics
-            // ~8px width x 16px height per character
-            let (cols, rows) = get_terminal_size();
-            return ((cols as u32) * 8, (rows as u32) * 16);
+            eprintln!("Error: failed to get terminal pixel dimensions via ioctl");
+            eprintln!("This terminal may not support pixel reporting (iTerm2/Wezterm required)");
+            std::process::exit(1);
         }
         (ws.ws_xpixel as u32, ws.ws_ypixel as u32)
     }
