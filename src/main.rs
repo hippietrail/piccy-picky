@@ -200,10 +200,13 @@ fn main() {
             }
         }
 
-        // Load and display images (iTerm2 will auto-scale via width parameter)
+        // Load and display images
+         // Scale the display width by our layout_scale factor, then let iTerm2 handle all rendering
+         // This avoids double-scaling: we reduce the width budget, iTerm2 scales image to fit
+         let scaled_display_width_chars = ((display_width_chars as f32) * scale_factor) as u32;
          let mut displayed: Vec<(PathBuf, ImageInfo)> = Vec::new();
          for path in chosen_ref {
-             match load_and_display_image(path, scale_factor, display_width_chars) {
+             match load_and_display_image(path, scaled_display_width_chars) {
                 Ok(info) => {
                     let abbrev = term::abbreviate_path(path, "", cols as usize);
                     println!("{}", abbrev);
@@ -262,7 +265,7 @@ fn main() {
                         // Redraw images not yet decided (idx..displayed.len())
                         for i in idx..displayed.len() {
                             let (path, _) = &displayed[i];
-                            match load_and_display_image(path, scale_factor, display_width_chars) {
+                            match load_and_display_image(path, scaled_display_width_chars) {
                                 Ok(_) => {
                                     let abbrev = term::abbreviate_path(path, "", cols as usize);
                                     println!("{}", abbrev);
@@ -504,44 +507,39 @@ fn display_full_scaling_info(
     io::stdout().flush().unwrap();
 }
 
-fn load_and_display_image(path: &Path, layout_scale: f32, display_width_chars: u32) -> Result<ImageInfo, String> {
-    // CRITICAL: Never scale twice. We use layout_scale to calculate the display width for iTerm2,
-    // but we do NOT resize the image itself (except for huge images >4000px).
-    // iTerm2 will handle all scaling when it receives the width parameter.
+fn load_and_display_image(path: &Path, display_width_chars: u32) -> Result<ImageInfo, String> {
+    // CRITICAL: Never scale twice. 
+    // display_width_chars is ALREADY scaled by layout_scale (done in main loop).
+    // We now just load the image and tell iTerm2 what width to display it at.
+    // iTerm2 handles all the scaling to fit that width while preserving aspect ratio.
     //
-    // TODO: Current implementation still scales image down (wrong!)
-    // Should instead:
-    // 1. Load image at original size (or reduced if >4000px for file size)
-    // 2. Calculate display_width_px = display_width_chars * px_per_char_w * layout_scale
-    // 3. Pass display_width_chars to iTerm2, which scales based on that width
-    // 4. Never apply layout_scale to the image dimensions
+    // Flow:
+    // 1. Load image at original size (reduce only if >4000px for file size)
+    // 2. Encode to PNG
+    // 3. Tell iTerm2 the display_width_chars (already scaled down if needed)
+    // 4. iTerm2 scales image to fit that width, maintaining aspect ratio
+    // Result: single scaling pass, no overflow
     
     let img = image::open(path)
         .map_err(|e| e.to_string())?;
 
     let (w, h) = img.dimensions();
     
-    // Step 1: Apply layout scaling if needed (to fit 3 images in available space)
-    // This is the UNIFORM scale-down we calculated after checking all 3 images
-    let after_layout_w = (w as f32 * layout_scale) as u32;
-    let after_layout_h = (h as f32 * layout_scale) as u32;
-    
-    // Step 2: If image is still massive, apply encode_scale to reduce file size
-    // This is a secondary pass only for truly huge images, not for layout
+    // Only apply encode_scale for truly massive images (>4000px) to reduce file size
+    // Do NOT apply layout_scale to the image—let iTerm2 handle that via the width parameter
     let max_dim = 4000u32;
-    let encode_scale = if after_layout_w > max_dim || after_layout_h > max_dim {
-        (max_dim as f32 / after_layout_w.max(after_layout_h) as f32).min(1.0)
+    let encode_scale = if w > max_dim || h > max_dim {
+        (max_dim as f32 / w.max(h) as f32).min(1.0)
     } else {
         1.0
     };
 
-    let final_w = (after_layout_w as f32 * encode_scale) as u32;
-    let final_h = (after_layout_h as f32 * encode_scale) as u32;
+    let final_w = (w as f32 * encode_scale) as u32;
+    let final_h = (h as f32 * encode_scale) as u32;
 
-    let img_to_encode = if layout_scale < 1.0 || encode_scale < 1.0 {
-        let scale = layout_scale * encode_scale;
-        let scaled_w = (w as f32 * scale) as u32;
-        let scaled_h = (h as f32 * scale) as u32;
+    let img_to_encode = if encode_scale < 1.0 {
+        let scaled_w = (w as f32 * encode_scale) as u32;
+        let scaled_h = (h as f32 * encode_scale) as u32;
         img.resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Lanczos3)
     } else {
         img
@@ -567,6 +565,6 @@ fn load_and_display_image(path: &Path, layout_scale: f32, display_width_chars: u
         orig_h: h,
         scaled_w: final_w,
         scaled_h: final_h,
-        scale_factor: layout_scale * encode_scale,
+        scale_factor: encode_scale,  // Only encode_scale, not layout_scale (iTerm2 handles that)
     })
 }
