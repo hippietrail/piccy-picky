@@ -9,11 +9,10 @@ use image::GenericImageView;
 mod macos;
 mod term;
 
-// TODO: Remove ScalingMode entirely - we only need one algorithm:
+// Single scaling algorithm implemented:
 // 1. Fit each image to available width (in pixels)
 // 2. If all 3 heights exceed available height, scale all down uniformly
-// The "modes" (Uniform vs EqualBudget) both end up doing the same thing
-// and the calculated scale_factor was never applied anyway (see BUG below)
+// Uniform scaling ensures all images scale proportionally together
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -171,39 +170,44 @@ fn main() {
         let available_height_px = px_height.saturating_sub(ui_height_px);
         
         // Available width: responsive to terminal, with margin for safety
-        // TODO: Consider making this configurable or based on image count
         let width_margin_cols = 2u32;
         let available_width_cols = cols.saturating_sub(width_margin_cols as u16) as u32;
         let available_width_px = available_width_cols * (px_width / cols.max(1) as u32);
         
         // Use the full available width for display, not hardcoded 35 chars
-        let display_width_chars = available_width_cols;
-        let pixels_per_char_h = px_height.max(1) / rows.max(1) as u32;
-        let pixels_per_char_w = px_width.max(1) / cols.max(1) as u32;
-        let available_rows = rows.saturating_sub(5) as u32; // 5 rows reserved
-        
-        let mut scale_factor = 1.0f32;
-        
-        for path in chosen_ref {
-            match calc_image_height_rows(path, display_width_chars, pixels_per_char_w, pixels_per_char_h) {
-                Ok(h) => {
-                    // TODO: Use this to check vertical fit and calculate uniform scale-down if needed
-                    if h as u32 > available_rows {
-                        let ratio = available_rows as f32 / h as f32;
-                        scale_factor = scale_factor.min(ratio);
-                    }
-                }
-                Err(e) => {
-                    let abbrev = term::abbreviate_path(path, "", cols as usize);
-                    eprintln!("Failed to calc height {}: {}", abbrev, e);
-                }
-            }
-        }
+         let display_width_chars = available_width_cols;
+         let pixels_per_char_h = px_height.max(1) / rows.max(1) as u32;
+         let pixels_per_char_w = px_width.max(1) / cols.max(1) as u32;
+         let available_rows = rows.saturating_sub(5) as u32; // 5 rows reserved
+         
+         // STEP 1: Calculate scale factor needed to fit all 3 images vertically
+         // For each image: given display_width_chars and its aspect ratio, what height does it need?
+         // If sum of heights > available height, scale down all 3 uniformly
+         let mut scale_factor = 1.0f32;
+         let mut total_height_rows = 0u32;
+         
+         for path in chosen_ref {
+             match calc_image_height_rows(path, display_width_chars, pixels_per_char_w, pixels_per_char_h) {
+                 Ok(h) => {
+                     total_height_rows += h;
+                 }
+                 Err(e) => {
+                     let abbrev = term::abbreviate_path(path, "", cols as usize);
+                     eprintln!("Failed to calc height {}: {}", abbrev, e);
+                 }
+             }
+         }
+         
+         // If total height exceeds available, calculate uniform scale-down
+         // Add 2% safety buffer for rounding errors (ceil when converting px to rows)
+         if total_height_rows > available_rows {
+             scale_factor = (available_rows as f32 / total_height_rows as f32) * 0.98;
+         }
 
-        // Load and display images
-         // Scale the display width by our layout_scale factor, then let iTerm2 handle all rendering
-         // This avoids double-scaling: we reduce the width budget, iTerm2 scales image to fit
-         let scaled_display_width_chars = ((display_width_chars as f32) * scale_factor) as u32;
+         // Load and display images
+          // Scale the display width by our layout_scale factor, then let iTerm2 handle all rendering
+          // This avoids double-scaling: we reduce the width budget, iTerm2 scales image to fit
+          let scaled_display_width_chars = ((display_width_chars as f32) * scale_factor) as u32;
          let mut displayed: Vec<(PathBuf, ImageInfo)> = Vec::new();
          for path in chosen_ref {
              match load_and_display_image(path, scaled_display_width_chars) {
@@ -225,7 +229,7 @@ fn main() {
         }
 
         // Show count before prompts
-        println!("\n📸 Picked {} images out of {}", chosen_ref.len(), images.len());
+        println!("📸 Picked {} images out of {}", chosen_ref.len(), images.len());
 
         // Interactive interface: show [k/b/i] [k/b/i] [k/b/i] with ANSI highlighting
          let mut decisions = Vec::new();
@@ -475,20 +479,25 @@ fn display_full_scaling_info(
         let theoretical_h = (theoretical_w as f32 * info.orig_h as f32 / info.orig_w as f32) as u32;
         println!("    If scaled to available width: {} × {} px", theoretical_w, theoretical_h);
         
-        // Display dimensions in character grid
-        let display_rows = (info.scaled_h + px_per_char_h - 1) / px_per_char_h;
-        println!("    Display rows:     ~{} chars tall", display_rows);
+        // Display dimensions accounting for global scale factor
+        // When we pass scaled_display_width_chars to iTerm2, it scales height proportionally
+        let scaled_display_h = (theoretical_h as f32 * scale_factor) as u32;
+        let display_rows = (scaled_display_h + px_per_char_h - 1) / px_per_char_h;
+        println!("    Actual display (after scale): {} × {} px = ~{} chars tall", theoretical_w, scaled_display_h, display_rows);
     }
     
     // Summary validation
     println!("\n✅ VALIDATION:");
-    let total_img_height_px: u32 = displayed.iter().map(|(_, info)| info.scaled_h).sum();
-    let padding_px = (displayed.len().saturating_sub(1)) as u32 * px_per_char_h;
-    let total_needed_px = total_img_height_px + padding_px;
+    // Calculate actual display heights (after applying global scale factor)
+    let mut total_actual_height_px = 0u32;
+    for (_, info) in displayed.iter() {
+        let theoretical_h = (available_width_px as f32 * info.orig_h as f32 / info.orig_w as f32) as u32;
+        let scaled_h = (theoretical_h as f32 * scale_factor) as u32;
+        total_actual_height_px += scaled_h;
+    }
+    let total_needed_px = total_actual_height_px;
     
-    println!("  Total image heights: {} px", total_img_height_px);
-    println!("  Padding (between):   {} px ({} rows)", padding_px, 
-             (padding_px + px_per_char_h - 1) / px_per_char_h);
+    println!("  Total image heights (after scale): {} px", total_actual_height_px);
     println!("  Total needed:        {} px", total_needed_px);
     println!("  Available:           {} px", available_height_px);
     
